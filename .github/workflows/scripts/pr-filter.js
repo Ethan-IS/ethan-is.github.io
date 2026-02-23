@@ -9,10 +9,36 @@ function hasDescription(markdown) {
   );
 }
 
+function stripHtmlComments(markdown) {
+  let output = '';
+  let cursor = 0;
+
+  while (cursor < markdown.length) {
+    const start = markdown.indexOf('<!--', cursor);
+
+    if (start === -1) {
+      output += markdown.slice(cursor);
+      break;
+    }
+
+    output += markdown.slice(cursor, start);
+
+    const end = markdown.indexOf('-->', start + 4);
+
+    if (end === -1) {
+      break;
+    }
+
+    cursor = end + 3;
+  }
+
+  return output;
+}
+
 export default async ({ github, context, core }) => {
   const pr = context.payload.pull_request;
   const body = pr.body === null ? '' : pr.body;
-  const markdown = body.replace(/<!--[\s\S]*?-->/g, '');
+  const markdown = stripHtmlComments(body);
   const action = context.payload.action;
 
   const isValid =
