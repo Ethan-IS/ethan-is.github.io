@@ -2,7 +2,7 @@
 title: "InnoDI: Swift Macro 기반 타입 안전 의존성 주입 라이브러리"
 date: 2026-02-23 00:00:00 +0900
 categories: [iOS, Swift, Architecture]
-tags: [swift, ios, dependency-injection, macro, di, clean-architecture]
+tags: [swift, iOS, dependency-injection, macro, di, clean-architecture]
 author: ethan
 toc: true
 comments: true
