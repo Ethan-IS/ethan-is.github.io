@@ -7,8 +7,8 @@ set -eu
 opt_pre=false # option for bump gem version
 opt_pkg=false # option for building gem package
 
-MAIN_BRANCH="master"
-RELEASE_BRANCH="production"
+MAIN_BRANCH="main"
+RELEASE_BRANCH="main"
 
 GEM_SPEC="jekyll-theme-chirpy.gemspec"
 NODE_SPEC="package.json"
@@ -134,6 +134,11 @@ push_gem() {
 
 ## Merge the release branch into the default branch
 merge() {
+  if [[ "$MAIN_BRANCH" == "$RELEASE_BRANCH" ]]; then
+    echo "> Skip merge: release branch and main branch are identical ($MAIN_BRANCH)"
+    return 0
+  fi
+
   git fetch origin "$MAIN_BRANCH"
   git checkout -b "$MAIN_BRANCH" origin/"$MAIN_BRANCH"
 
