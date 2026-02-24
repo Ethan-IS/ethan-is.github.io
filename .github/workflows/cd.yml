@@ -2,41 +2,61 @@ name: CD
 
 on:
   push:
-    branches: [main]
-    tags-ignore: ["**"]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
-  release:
-    if: ${{ ! startsWith(github.event.head_commit.message, 'chore(release)') }}
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          fetch-tags: true
 
-      - uses: ruby/setup-ruby@v1
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
         with:
           ruby-version: 3.3
           bundler-cache: true
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: lts/*
-
-      - run: npm install
-      - run: npx semantic-release --repository-url "https://github.com/${{ github.repository }}.git"
+      - name: Build site
+        run: bundle exec jekyll b -d "_site${{ steps.pages.outputs.base_path }}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEM_HOST_API_KEY: ${{ secrets.GEM_HOST_API_KEY }}
+          JEKYLL_ENV: "production"
 
-  publish:
-    needs: release
-    uses: ./.github/workflows/publish.yml
-    secrets:
-      GH_PAT: ${{ secrets.GH_PAT }}
-      BUILDER: ${{ secrets.BUILDER }}
+      - name: Test site
+        run: |
+          bundle exec htmlproofer _site \
+            \-\-disable-external \
+            \-\-ignore-urls "/^http:\/\/127.0.0.1/,/^http:\/\/0.0.0.0/,/^http:\/\/localhost/"
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: "_site${{ steps.pages.outputs.base_path }}"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
