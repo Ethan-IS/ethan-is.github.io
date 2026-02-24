@@ -7,9 +7,23 @@ layout: page
 
 {% assign df_strftime_m = site.data.locales[lang].df.archives.strftime | default: '/ %m' %}
 {% assign df_dayjs_m = site.data.locales[lang].df.archives.dayjs | default: '/ MM' %}
+{% assign current_lang_base = lang | split: '-' | first %}
+{% assign localized_posts = '' | split: '' %}
+
+{% for post in site.posts %}
+  {% if post.hidden == true %}
+    {% continue %}
+  {% endif %}
+
+  {% assign post_lang = post.lang | default: site.lang %}
+  {% assign post_lang_base = post_lang | split: '-' | first %}
+  {% if post_lang_base == current_lang_base %}
+    {% assign localized_posts = localized_posts | push: post %}
+  {% endif %}
+{% endfor %}
 
 <div id="archives" class="pl-xl-3">
-  {% for post in site.posts %}
+  {% for post in localized_posts %}
     {% assign cur_year = post.date | date: '%Y' %}
 
     {% if cur_year != last_year %}

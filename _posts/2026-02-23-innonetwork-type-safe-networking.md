@@ -1,6 +1,8 @@
 ---
 title: "InnoNetwork: Swift Concurrency를 위한 타입 안전 네트워킹 프레임워크"
 date: 2026-02-23 00:00:00 +0900
+translation_key: innonetwork-type-safe-networking
+lang: ko-KR
 categories: [iOS, Swift, Architecture]
 tags: [swift, iOS, networking, async-await, swift-concurrency, clean-architecture, type-safe]
 author: ethan

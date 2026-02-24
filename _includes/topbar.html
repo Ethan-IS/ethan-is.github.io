@@ -1,4 +1,12 @@
 <!-- The Top Bar -->
+{% assign current_lang_base = include.lang | split: '-' | first %}
+{% assign default_lang_base = site.lang | split: '-' | first %}
+
+{% if current_lang_base == default_lang_base %}
+  {% assign localized_home_url = '/' %}
+{% else %}
+  {% capture localized_home_url %}/{{ current_lang_base }}/{% endcapture %}
+{% endif %}
 
 <header id="topbar-wrapper" class="flex-shrink-0" aria-label="Top Bar">
   <div
@@ -8,7 +16,7 @@
     <nav id="breadcrumb" aria-label="Breadcrumb">
       {% assign paths = page.url | split: '/' %}
 
-      {% if paths.size == 0 or page.layout == 'home' %}
+      {% if paths.size == 0 or page.layout == 'home' or page.layout == 'home-lang' %}
         <!-- index page -->
         <span>{{ site.data.locales[include.lang].tabs.home | capitalize }}</span>
 
@@ -16,7 +24,7 @@
         {% for item in paths %}
           {% if forloop.first %}
             <span>
-              <a href="{{ '/' | relative_url }}">
+              <a href="{{ localized_home_url | relative_url }}">
                 {{- site.data.locales[include.lang].tabs.home | capitalize -}}
               </a>
             </span>
@@ -45,7 +53,7 @@
     </button>
 
     <div id="topbar-title">
-      {% if page.layout == 'home' %}
+      {% if page.layout == 'home' or page.layout == 'home-lang' %}
         {{- site.data.locales[include.lang].title | default: site.title -}}
       {% elsif page.collection == 'tabs' or page.layout == 'page' %}
         {%- capture tab_key -%}{{ page.url | split: '/' }}{%- endcapture -%}

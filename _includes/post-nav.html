@@ -3,14 +3,51 @@
 <nav class="post-navigation d-flex justify-content-between" aria-label="Post Navigation">
   {% assign previous = site.data.locales[include.lang].post.button.previous %}
   {% assign next = site.data.locales[include.lang].post.button.next %}
+  {% assign current_lang_base = include.lang | split: '-' | first %}
+  {% assign localized_posts = '' | split: '' %}
 
-  {% if page.previous.url %}
+  {% for candidate in site.posts %}
+    {% if candidate.hidden == true %}
+      {% continue %}
+    {% endif %}
+
+    {% assign candidate_lang = candidate.lang | default: site.lang %}
+    {% assign candidate_lang_base = candidate_lang | split: '-' | first %}
+    {% if candidate_lang_base == current_lang_base %}
+      {% assign localized_posts = localized_posts | push: candidate %}
+    {% endif %}
+  {% endfor %}
+
+  {% assign current_index = -1 %}
+  {% for candidate in localized_posts %}
+    {% if candidate.url == page.url %}
+      {% assign current_index = forloop.index0 %}
+      {% break %}
+    {% endif %}
+  {% endfor %}
+
+  {% assign previous_post = nil %}
+  {% assign next_post = nil %}
+
+  {% if current_index >= 0 %}
+    {% assign previous_index = current_index | plus: 1 %}
+    {% if previous_index < localized_posts.size %}
+      {% assign previous_post = localized_posts[previous_index] %}
+    {% endif %}
+
+    {% assign next_index = current_index | minus: 1 %}
+    {% if next_index >= 0 %}
+      {% assign next_post = localized_posts[next_index] %}
+    {% endif %}
+  {% endif %}
+
+  {% if previous_post %}
     <a
-      href="{{ site.baseurl }}{{ page.previous.url }}"
+      href="{{ site.baseurl }}{{ previous_post.url }}"
       class="btn btn-outline-primary"
       aria-label="{{ previous }}"
     >
-      <p>{{ page.previous.title }}</p>
+      <p>{{ previous_post.title }}</p>
     </a>
   {% else %}
     <div class="btn btn-outline-primary disabled" aria-label="{{ previous }}">
@@ -18,13 +55,13 @@
     </div>
   {% endif %}
 
-  {% if page.next.url %}
+  {% if next_post %}
     <a
-      href="{{ site.baseurl }}{{page.next.url}}"
+      href="{{ site.baseurl }}{{ next_post.url }}"
       class="btn btn-outline-primary"
       aria-label="{{ next }}"
     >
-      <p>{{ page.next.title }}</p>
+      <p>{{ next_post.title }}</p>
     </a>
   {% else %}
     <div class="btn btn-outline-primary disabled" aria-label="{{ next }}">

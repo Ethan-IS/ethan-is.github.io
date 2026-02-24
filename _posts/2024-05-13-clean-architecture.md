@@ -2,6 +2,8 @@
 title: Tuist로 확장 가능한 모듈화 하기 Part 3 - Clean Architecture 이해하기
 author: ethan
 date: 2024-05-13 17:40:00 +0900
+translation_key: clean-architecture
+lang: ko-KR
 categories: [Architecture]
 tags: [tutorial, swift, tuist, iOS]
 

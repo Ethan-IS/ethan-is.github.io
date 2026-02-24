@@ -1,8 +1,8 @@
 ---
-title: "InnoFlow: SwiftUI를 위한 단방향 아키텍처 프레임워크"
+title: "InnoFlow: A one-way architecture framework for SwiftUI"
 date: 2026-02-23 00:00:00 +0900
 translation_key: innoflow-unidirectional-architecture
-lang: ko-KR
+lang: en
 categories: [iOS, Swift, Architecture]
 tags: [swift, iOS, state-management, unidirectional, elm-architecture, tca, swiftui]
 author: ethan
@@ -10,20 +10,23 @@ toc: true
 comments: true
 ---
 
-## 들어가며
+## Introduction
 
-SwiftUI가 도입된 이후, 상태 관리에 대한 고민은 깊어졌습니다. `@State`, `@StateObject`, `@EnvironmentObject` 등 다양한 프로퍼티 래퍼가 제공되지만, 프로젝트가 커질수록 상태의 흐름을 추적하기 어려워집니다. "이 상태가 어디서 변경되었지?"라는 질문에 답하기 위해 여러 파일을 오가는 경험, 한 번쯤 있으실 겁니다.
 
-**InnoFlow**는 이 문제를 해결하기 위해 만들어진 단방향 아키텍처 프레임워크입니다. Elm Architecture를 기반으로 하면서도, Swift 6의 `@Observable` 매크로를 적극 활용해 SwiftUI와 자연스럽게 통합됩니다.
+Since the introduction of SwiftUI, concerns about state management have deepened. Various property wrappers are provided, such as `@State`, `@StateObject`, and `@EnvironmentObject`, but as the project grows, it becomes difficult to track the flow of states. You've probably found yourself switching between files to answer the question, "Where did this state change?"
 
-## 왜 InnoFlow를 만들었나요?
+**InnoFlow** is a one-way architecture framework created to solve this problem. While based on Elm Architecture, it integrates naturally with SwiftUI by actively utilizing Swift 6's `@Observable` macro.
 
-### 기존 상태 관리의 한계
+## Why did you create InnoFlow?
 
-SwiftUI의 기본 상태 관리 도구들은 작은 규모에서는 훌륭합니다. 하지만 다음과 같은 상황에서는 한계를 맞이합니다:
+
+### Limitations of Existing State Management
+
+
+SwiftUI's built-in state management tools are great on a small scale. However, there are limitations in the following situations:
 
 ```swift
-// 뷰 곳곳에 흩어진 상태 변경 로직
+// State mutation logic scattered across the view
 struct ProfileView: View {
     @State private var user: User?
     @State private var isLoading = false
@@ -46,45 +49,55 @@ struct ProfileView: View {
 }
 ```
 
-이런 방식은 다음과 같은 문제를 야기합니다:
+This approach causes the following problems:
 
-1. **상태 변경 로직이 분산됨** - 여러 메서드에서 상태를 직접 수정
-2. **비동기 처리 복잡도** - 에러 처리, 로딩 상태 관리가 반복됨
-3. **테스트 어려움** - 상태 변경을 격리해서 테스트하기 까다로움
-4. **디버깅 난이도** - 상태가 언제, 왜 변경되었는지 추적하기 어려움
+1. **State change logic is distributed** - multiple methods modify state directly
 
-### 단방향 아키텍처의 답
+2. **Asynchronous processing complexity** - Error handling and loading state management are repeated
 
-InnoFlow는 **단방향 데이터 흐름(Unidirectional Data Flow)**을 통해 이 문제를 해결합니다:
+3. **Difficult to test** - State changes are difficult to isolate and test
+
+4. **Debugging Difficulty** - Difficult to track when and why state changed
+
+
+### Why Unidirectional Architecture
+
+
+InnoFlow solves this problem through **Unidirectional Data Flow**:
 
 ```
 Action → Reduce → State Mutation → Effect → Action → ...
 ```
 
-모든 상태 변경은 **Action**을 통해 시작되고, **Reducer**에서 한 곳에 모여 처리됩니다. 이렇게 하면:
+All state changes are initiated via **Action** and are centralized and processed in **Reducer**. If you do this:
 
-- 상태 변경 로직이 **한 곳에 집중**됨
-- 상태 변경의 **원인(Action)과 결과(State)**가 명확함
-- **테스트 가능한** 순수 함수로 로직을 분리 가능
+- State change logic is **centralized**
+
+- **Cause (Action) and result (State**) of state change are clear
+
+- **Testable** Separate logic into pure functions
+
 
 ---
 
-## 핵심 개념
+## Core Concepts
 
-### 1. `@InnoFlow` 매크로
 
-`@InnoFlow` 매크로를 struct에 적용하면, Reducer 프로토콜 준수 코드가 자동으로 생성됩니다.
+### 1. `@InnoFlow` macro
+
+
+When you apply the `@InnoFlow` macro to a struct, Reducer protocol compliant code is automatically generated.
 
 ```swift
 @InnoFlow
 struct CounterFeature {
-    // 상태: 반드시 Sendable이어야 함
+    // State: must conform to Sendable
     struct State: Equatable, Sendable, DefaultInitializable {
         var count = 0
-        @BindableField var step = 1  // SwiftUI 바인딩 가능
+        @BindableField var step = 1  // bindable from SwiftUI
     }
 
-    // 액션: 상태 변경을 유발하는 이벤트
+    // Actions: events that trigger state changes
     enum Action: Equatable, Sendable {
         case increment
         case decrement
@@ -92,7 +105,7 @@ struct CounterFeature {
         case setStep(Int)
     }
 
-    // Reducer: 상태 변경 로직의 유일한 장소
+    // Reducer: the single place where state changes happen
     func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
         switch action {
         case .increment:
@@ -112,9 +125,10 @@ struct CounterFeature {
 }
 ```
 
-### 2. `Store` - 관찰 가능한 상태 컨테이너
+### 2. `Store` - Observable state container
 
-Store는 Reducer를 감싸고 SwiftUI에서 관찰 가능한 상태 컨테이너입니다.
+
+Store is a state container that wraps a Reducer and is observable in SwiftUI.
 
 ```swift
 import SwiftUI
@@ -143,46 +157,49 @@ struct CounterView: View {
 }
 ```
 
-`@Observable` 기반이므로, `store.count`, `store.step` 같은 프로퍼티 접근만으로도 자동으로 뷰가 갱신됩니다.
+Since it is based on `@Observable`, the view is automatically updated just by accessing properties such as `store.count` and `store.step`.
 
-### 3. `EffectTask` - 비동기 작업의 통합 모델
+### 3. `EffectTask` - Unified model of asynchronous operations
 
-EffectTask는 비동기 작업을 선언적으로 표현하는 DSL입니다.
+
+EffectTask is a DSL that expresses asynchronous tasks declaratively.
 
 ```swift
-// 작업 없음
+// no work
 return .none
 
-// 즉시 액션 전송
+// send an action immediately
 return .send(.loadingCompleted)
 
-// 비동기 작업 실행
+// run asynchronous work
 return .run { send in
     let data = try await networkService.fetch()
     await send(.dataLoaded(data))
 }
 
-// 병렬 실행
+// run in parallel
 return .merge(
     .run { await send(.loadUser()) },
     .run { await send(.loadSettings()) }
 )
 
-// 순차 실행
+// run sequentially
 return .concatenate(
     .send(.startLoading),
-    .run { /* 비동기 작업 */ }
+    .run { /* async work */ }
 )
 
-// 취소
+// cancel
 return .cancel("network-request")
 ```
 
 ---
 
-## 실전 예제: Todo 앱
+## Practical example: Todo app
 
-### Feature 정의
+
+### Feature definition
+
 
 ```swift
 @InnoFlow
@@ -201,12 +218,12 @@ struct TodoFeature {
         case deleteTodo(UUID)
         case setFilter(Filter)
 
-        // 내부 액션 (Effect 결과)
+        // Internal actions (effect output)
         case _todosLoaded([Todo])
         case _loadFailed(String)
     }
 
-    // 의존성 주입
+    // dependency injection
     let todoService: TodoServiceProtocol
 
     init(todoService: TodoServiceProtocol = TodoService.shared) {
@@ -264,7 +281,8 @@ struct TodoFeature {
 }
 ```
 
-### SwiftUI 뷰
+### SwiftUI View
+
 
 ```swift
 struct TodoView: View {
@@ -328,11 +346,13 @@ struct TodoView: View {
 
 ---
 
-## EffectTask의 고급 기능
+## Advanced features of EffectTask
 
-### Debounce와 Throttle
 
-사용자 입력을 처리할 때 유용합니다.
+### Debounce and Throttle
+
+
+This is useful for handling user input.
 
 ```swift
 case .searchTextChanged(let text):
@@ -344,19 +364,20 @@ case .searchTextChanged(let text):
         await send(.searchResultsLoaded(results))
     }
     .debounce("search", for: .milliseconds(300))
-    // 사용자가 입력을 멈춘 후 300ms 뒤에 실행
+    // run 300ms after the user stops typing
 ```
 
 ```swift
 case .refreshPulled:
-    return .run { /* 새로고침 로직 */ }
+    return .run { /* refresh logic */ }
     .throttle("refresh", for: .seconds(1), leading: false, trailing: true)
-    // 1초 내 추가 요청 무시
+    // ignore additional requests within 1 second
 ```
 
-### 애니메이션
+### animated movie
 
-상태 변경 시 애니메이션을 적용합니다.
+
+Apply animation when state changes.
 
 ```swift
 case .addItem:
@@ -365,14 +386,15 @@ case .addItem:
     .animation(.spring())
 ```
 
-### 취소 가능한 작업
+### Cancellable Action
 
-장기 실행 작업을 관리합니다.
+
+Manage long-running tasks.
 
 ```swift
 case .startLongTask:
     return .run { send in
-        // 긴 작업
+        // long-running task
     }
     .cancellable("long-task", cancelInFlight: true)
 
@@ -382,9 +404,10 @@ case .cancelTask:
 
 ---
 
-## 테스트하기
+## Testing
 
-InnoFlow는 `TestStore`를 통해 결정론적 테스트를 지원합니다.
+
+InnoFlow supports deterministic testing through `TestStore`.
 
 ```swift
 import Testing
@@ -394,38 +417,38 @@ import InnoFlowTesting
 @MainActor
 struct TodoFeatureTests {
 
-    @Test("할 일 추가")
+    @Test("Add todo")
     func testAddTodo() async {
         let store = TestStore(
             reducer: TodoFeature(todoService: MockTodoService())
         )
 
-        await store.send(.addTodo("새 할 일")) {
+        await store.send(.addTodo("New todo")) {
             $0.todos.count = 1
-            $0.todos.first?.title = "새 할 일"
+            $0.todos.first?.title = "New todo"
         }
 
         await store.assertNoMoreActions()
     }
 
-    @Test("할 일 로드 플로우")
+    @Test("Todo loading flow")
     func testLoadTodosFlow() async {
         let mockService = MockTodoService()
         mockService.mockTodos = [
-            Todo(id: UUID(), title: "테스트 할 일")
+            Todo(id: UUID(), title: "Test todo")
         ]
 
         let store = TestStore(
             reducer: TodoFeature(todoService: mockService)
         )
 
-        // 액션 전송 및 상태 변화 검증
+        // Send action and assert state changes
         await store.send(.loadTodos) {
             $0.isLoading = true
             $0.errorMessage = nil
         }
 
-        // Effect에서 발생한 액션 검증
+        // Verify action emitted from effect
         await store.receive(._todosLoaded(mockService.mockTodos)) {
             $0.todos = mockService.mockTodos
             $0.isLoading = false
@@ -436,20 +459,25 @@ struct TodoFeatureTests {
 }
 ```
 
-### 테스트의 장점
+### Benefits of Testing
 
-1. **순수 함수 테스트** - Reducer는 사이드 이펙트 없는 순수 함수
-2. **시간 독립적** - 비동기 작업도 결정론적으로 테스트 가능
-3. **상태 스냅샷** - 각 액션 후의 상태를 명확히 검증
+
+1. **Pure function test** - Reducer is a pure function without side effects
+
+2. **Time independent** - even asynchronous operations can be tested deterministically
+
+3. **State Snapshot** - Clearly verify the state after each action
+
 
 ---
 
-## Store Scope - 부모-자식 상태 격리
+## Store Scope - Parent-child state isolation
 
-대규모 앱에서는 기능 단위로 Store를 분리하는 것이 좋습니다. InnoFlow는 `scope`를 통해 부모 Store에서 자식 Store를 생성할 수 있습니다.
+
+For large apps, it's a good idea to separate Stores into functional units. InnoFlow can create a child Store from a parent Store through `scope`.
 
 ```swift
-// 부모 Feature
+// Parent feature
 @InnoFlow
 struct AppFeature {
     struct State: Equatable, Sendable {
@@ -465,7 +493,7 @@ struct AppFeature {
     func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
         switch action {
         case .todo(let todoAction):
-            // 자식 Feature에 위임
+            // Delegate to child feature
             return TodoFeature().reduce(into: &state.todo, action: todoAction)
                 .map { Action.todo($0) }
 
@@ -476,7 +504,7 @@ struct AppFeature {
     }
 }
 
-// 자식 뷰에서 스코프 사용
+// Use scope in child view
 struct TodoSectionView: View {
     let store: Store<AppFeature>
 
@@ -493,52 +521,72 @@ struct TodoSectionView: View {
 
 ---
 
-## 다른 프레임워크와 비교
+## Comparison with other frameworks
 
-| 기능 | InnoFlow | TCA | ReactorKit | MVVM |
+
+| function | InnoFlow | TCA | ReactorKit | MVVM |
 |------|----------|-----|------------|------|
-| 학습 곡선 | 낮음 | 높음 | 중간 | 낮음 |
-| SwiftUI 통합 | 네이티브 | 네이티브 | Rx 필요 | 수동 |
-| 보일러플레이트 | 적음 | 많음 | 중간 | 적음 |
-| 테스트 용이성 | 높음 | 높음 | 높음 | 중간 |
-| 상태 추적성 | 높음 | 높음 | 높음 | 낮음 |
-| Effect 관리 | DSL | 복잡 | Rx 기반 | 수동 |
+| learning curve | lowness | height | middle | lowness |
+| SwiftUI integration | native | native | Need Rx | passivity |
+| boiler plate | less | plenty | middle | less |
+| Testability | height | height | height | middle |
+| Status traceability | height | height | height | lowness |
+| Effect Management | DSL | complication | Rx-based | passivity |
 
-### InnoFlow가 추구하는 것
+### What InnoFlow pursues
 
-- **실용성**: TCA의 강력함을 유지하되, 학습 곡선을 낮춤
-- **SwiftUI 퍼스트**: `@Observable`을 적극 활용해 자연스러운 통합
-- **명확한 런타임 모델**: Effect 생명주기와 취소가 명확함
 
----
+- **Practical**: Retains the power of TCA, but lowers the learning curve
 
-## 개발 철학
+- **SwiftUI First**: Natural integration by actively utilizing `@Observable`
 
-### v2 설계 원칙
+- **Clear runtime model**: Effect lifecycle and cancellation are clear
 
-InnoFlow v2는 다음 원칙을 기반으로 재설계되었습니다:
-
-1. **단일 Reducer 계약** - `reduce(into:action:) -> EffectTask<Action>` 하나로 통합
-2. **명시적 비동기 모델** - EffectTask DSL로 run/merge/concatenate/cancel 통합
-3. **취소 완료 계약** - Store 취소 API가 async로, 결정론적 정리 보장
-4. **SwiftUI 퍼스트 런타임** - `@Observable` Store + `@MainActor` 어댑터
-5. **엄격한 바인딩 의도** - `@BindableField` 프로퍼티만 SwiftUI에서 바인딩 가능
-6. **결정론적 테스트** - 타임아웃/취소 지향 TestStore
-
-### 왜 이런 선택을 했나요?
-
-기존 아키텍처에서 겪은 문제들을 해결하기 위해서입니다:
-
-- **암시적 상태 변경**을 방지하고자 모든 변경이 Action을 거치도록 강제
-- **추적 불가능한 비동기**를 피하고자 Effect를 일급 객체로 다룸
-- **테스트 불가능한 로직**을 없애고자 Reducer를 순수 함수로 유지
-- **스파게티 바인딩**을 막고자 `@BindableField`로 명시적 opt-in
 
 ---
 
-## 설치
+## development philosophy
+
+
+### v2 design principles
+
+
+InnoFlow v2 has been redesigned based on the following principles:
+
+1. **Single Reducer Contract** - `reduce(into:action:) -> EffectTask<Action>` combined into one
+
+2. **Explicit asynchronous model** - run/merge/concatenate/cancel integration with EffectTask DSL
+
+3. **Cancellation completion contract** - Store cancellation API is async, ensuring deterministic cleanup
+
+4. **SwiftUI First Runtime** - `@Observable` Store + `@MainActor` Adapter
+
+5. **Strict binding intent** - Only the `@BindableField` property can be bound in SwiftUI
+
+6. **Deterministic Testing** - Timeout/Cancellation Oriented TestStore
+
+
+### Why did you make this choice?
+
+
+These choices were made to solve problems in the previous architecture:
+
+- Force all changes to go through Action to prevent **implicit state changes**
+
+- Treat Effect as a first-class object to avoid **untraceable asynchrony**
+
+- Keep Reducer as a pure function to eliminate **untestable logic**
+
+- Explicit opt-in with `@BindableField` to prevent **spaghetti binding**
+
+
+---
+
+## Installation
+
 
 ### Swift Package Manager
+
 
 ```swift
 dependencies: [
@@ -546,40 +594,60 @@ dependencies: [
 ]
 ```
 
-### 요구사항
+### Requirements
+
 
 - iOS 18.0+ / macOS 15.0+ / tvOS 18.0+ / watchOS 11.0+
+
 - Swift 6.2+
 
----
-
-## 결론
-
-InnoFlow는 **SwiftUI 시대에 맞는 실용적인 단방향 아키텍처**를 지향합니다.
-
-### 추천 대상
-
-- **상태 관리 복잡도**에 고민인 SwiftUI 개발자
-- **테스트 가능한 아키텍처**를 찾는 팀
-- **TCA는 너무 복잡**하다고 느끼는 분
-- **Elm Architecture**에 관심 있는 Swift 개발자
-
-### InnoFlow의 장점 요약
-
-1. **@InnoFlow 매크로** - 보일러플레이트 없이 Reducer 정의
-2. **@Observable Store** - SwiftUI와 자연스러운 통합
-3. **EffectTask DSL** - 선언적 비동기 작업 관리
-4. **TestStore** - 결정론적 테스트 지원
-5. **@BindableField** - 명시적이고 안전한 바인딩
-6. **낮은 학습 곡선** - 기존 SwiftUI 지식을 그대로 활용
-
-상태 관리가 복잡해지는 순간, InnoFlow를 고려해 보세요. 단방향 데이터 흐름이 주는 예측 가능성과 테스트 용이성을 경험하실 수 있습니다.
 
 ---
 
-## 참고 자료
+## Conclusion
 
-- [InnoFlow GitHub 저장소](https://github.com/InnoSquadCorp/InnoFlow)
-- [InnoFlow API 문서 (DocC)](https://innosquad-mdd.github.io/InnoFlow/documentation/innoflow/)
+
+InnoFlow aims for **a practical one-way architecture suitable for the SwiftUI era**.
+
+### Recommended for
+
+
+- SwiftUI developer concerned about **state management complexity**
+
+- Team looking for **testable architecture**
+
+- **Those who feel that TCA is too complicated**
+
+- Swift developer interested in **Elm Architecture**
+
+
+### Summary of InnoFlow Benefits
+
+
+1. **@InnoFlow Macro** - Define Reducer without boilerplate
+
+2. **@Observable Store** - Natural integration with SwiftUI
+
+3. **EffectTask DSL** - Declarative asynchronous task management
+
+4. **TestStore** - Supports deterministic testing
+
+5. **@BindableField** - explicit and safe binding
+
+6. **Low learning curve** - Leverage existing SwiftUI knowledge
+
+
+As soon as state management becomes complex, consider InnoFlow. Experience the predictability and testability of one-way data flow.
+
+---
+
+## Reference Materials
+
+
+- [InnoFlow GitHub Repository](https://github.com/InnoSquadCorp/InnoFlow)
+
+- [InnoFlow API Documentation (DocC)](https://innosquad-mdd.github.io/InnoFlow/documentation/innoflow/)
+
 - [Elm Architecture](https://guide.elm-lang.org/architecture/)
+
 - [TCA (The Composable Architecture)](https://github.com/pointfreeco/swift-composable-architecture)

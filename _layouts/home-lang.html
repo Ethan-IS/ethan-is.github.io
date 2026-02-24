@@ -3,65 +3,34 @@ layout: default
 ---
 
 {% include lang.html %}
+
 {% assign current_lang_base = lang | split: '-' | first %}
+{% assign pinned_posts = '' | split: '' %}
+{% assign normal_posts = '' | split: '' %}
 
-{% assign all_pinned = site.posts | where: 'pin', 'true' %}
-{% assign all_normal = site.posts | where_exp: 'item', 'item.pin != true and item.hidden != true' %}
-
-{% assign posts = '' | split: '' %}
-
-<!-- Get pinned posts on current page -->
-
-{% assign visible_start = paginator.page | minus: 1 | times: paginator.per_page %}
-{% assign visible_end = visible_start | plus: paginator.per_page %}
-
-{% if all_pinned.size > visible_start %}
-  {% if all_pinned.size > visible_end %}
-    {% assign pinned_size = paginator.per_page %}
-  {% else %}
-    {% assign pinned_size = all_pinned.size | minus: visible_start %}
-  {% endif %}
-
-  {% for i in (visible_start..all_pinned.size) limit: pinned_size %}
-    {% assign posts = posts | push: all_pinned[i] %}
-  {% endfor %}
-{% else %}
-  {% assign pinned_size = 0 %}
-{% endif %}
-
-<!-- Get normal posts on current page -->
-
-{% assign normal_size = paginator.posts | size | minus: pinned_size %}
-
-{% if normal_size > 0 %}
-  {% if pinned_size > 0 %}
-    {% assign normal_start = 0 %}
-  {% else %}
-    {% assign normal_start = visible_start | minus: all_pinned.size %}
-  {% endif %}
-
-  {% assign normal_end = normal_start | plus: normal_size | minus: 1 %}
-
-  {% for i in (normal_start..normal_end) %}
-    {% assign posts = posts | push: all_normal[i] %}
-  {% endfor %}
-{% endif %}
-
-{% assign localized_posts = '' | split: '' %}
-{% for post in posts %}
+{% for post in site.posts %}
   {% if post.hidden == true %}
     {% continue %}
   {% endif %}
 
   {% assign post_lang = post.lang | default: site.lang %}
   {% assign post_lang_base = post_lang | split: '-' | first %}
-  {% if post_lang_base == current_lang_base %}
-    {% assign localized_posts = localized_posts | push: post %}
+
+  {% if post_lang_base != current_lang_base %}
+    {% continue %}
+  {% endif %}
+
+  {% if post.pin == true %}
+    {% assign pinned_posts = pinned_posts | push: post %}
+  {% else %}
+    {% assign normal_posts = normal_posts | push: post %}
   {% endif %}
 {% endfor %}
 
+{% assign posts = pinned_posts | concat: normal_posts %}
+
 <div id="post-list" class="flex-grow-1 px-xl-1">
-  {% for post in localized_posts %}
+  {% for post in posts %}
     <article class="card-wrapper card">
       <a href="{{ post.url | relative_url }}" class="post-preview row g-0 flex-md-row-reverse">
         {% assign card_body_col = '12' %}
@@ -116,11 +85,9 @@ layout: default
 
             <div class="post-meta flex-grow-1 d-flex align-items-end">
               <div class="me-auto">
-                <!-- posted date -->
                 <i class="far fa-calendar fa-fw me-1"></i>
                 {% include datetime.html date=post.date lang=lang %}
 
-                <!-- categories -->
                 {% if post.categories.size > 0 %}
                   <i class="far fa-folder-open fa-fw me-1"></i>
                   <span class="categories">
@@ -139,16 +106,13 @@ layout: default
                 </div>
               {% endif %}
             </div>
-            <!-- .post-meta -->
           </div>
-          <!-- .card-body -->
         </div>
       </a>
     </article>
   {% endfor %}
-</div>
-<!-- #post-list -->
 
-{% if paginator.total_pages > 1 %}
-  {% include post-paginator.html %}
-{% endif %}
+  {% if posts.size == 0 %}
+    <p class="text-muted">{{ site.data.locales[lang].search.no_results }}</p>
+  {% endif %}
+</div>
