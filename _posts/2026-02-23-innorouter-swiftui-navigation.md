@@ -57,7 +57,7 @@ enum HomeRoute: Route {
 }
 ```
 
-Route는 `Hashable`과 `Sendable`을 따르면 된다. 화면 식별자 역할을 하니까 최대한 단순하게.
+Route는 `Hashable`과 `Sendable`을 따르면 됩니다. 화면 식별자 역할을 하니 최대한 단순하게 두는 것이 좋습니다.
 
 ### Store와 Host 설정
 
