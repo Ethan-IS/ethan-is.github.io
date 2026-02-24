@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.5](https://github.com/Ethan-IS/ethan-is.github.io/compare/v1.0.4...v1.0.5) (2026-02-24)
+
+### Bug Fixes
+
+* use current repo for semantic-release in CD ([#61](https://github.com/Ethan-IS/ethan-is.github.io/issues/61)) ([4c790cb](https://github.com/Ethan-IS/ethan-is.github.io/commit/4c790cb85d57d412d799be9d6e714c5feff98c9f))
+
 ## [7.4.1](https://github.com/cotes2020/jekyll-theme-chirpy/compare/v7.4.0...v7.4.1) (2025-10-26)
 
 ### Bug Fixes
