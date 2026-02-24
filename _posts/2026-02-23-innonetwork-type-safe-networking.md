@@ -556,7 +556,11 @@ struct MyApp: App {
     let userRepository: UserRepository
 
     init() {
-        self.client = try! DefaultNetworkClient(configuration: MyAPI())
+        do {
+            self.client = try DefaultNetworkClient(configuration: MyAPI())
+        } catch {
+            fatalError("Failed to create DefaultNetworkClient: \(error)")
+        }
         self.userRepository = UserRepositoryImpl(client: client)
     }
 
