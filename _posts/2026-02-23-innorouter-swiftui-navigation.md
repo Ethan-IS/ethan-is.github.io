@@ -331,7 +331,7 @@ enum HomeRoute {
 | FlowStacks | 딥링크 재생 모델 |
 | Stinsen | Host 기반 코디네이터 경계 |
 
-좋은 아이디어들을 모으면서도, SwiftUI 네이티브하게 동작하도록 설계했다.
+좋은 아이디어들을 모으면서도, SwiftUI 네이티브하게 동작하도록 설계했습니다.
 
 ---
 
