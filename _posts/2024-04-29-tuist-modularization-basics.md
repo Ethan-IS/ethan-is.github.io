@@ -2,6 +2,8 @@
 title: Tuist로 확장 가능한 모듈화 하기 Part 2 - 모듈화 기본
 author: ethan
 date: 2024-04-29 19:00:00 +0900
+translation_key: tuist-modularization-basics
+lang: ko-KR
 categories: [Architecture]
 tags: [tutorial, swift, tuist, iOS]
 

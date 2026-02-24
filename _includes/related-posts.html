@@ -10,6 +10,7 @@
 {% assign CATEGORY_SCORE = 0.5 %}
 
 {% assign SEPARATOR = ':' %}
+{% assign current_lang_base = include.lang | split: '-' | first %}
 
 {% assign match_posts = '' | split: '' %}
 
@@ -27,6 +28,17 @@
 
 {% for i in (0..last_index) %}
   {% assign post = match_posts[i] %}
+
+  {% if post.hidden == true %}
+    {% continue %}
+  {% endif %}
+
+  {% assign post_lang = post.lang | default: site.lang %}
+  {% assign post_lang_base = post_lang | split: '-' | first %}
+
+  {% if post_lang_base != current_lang_base %}
+    {% continue %}
+  {% endif %}
 
   {% if post.url == page.url %}
     {% continue %}

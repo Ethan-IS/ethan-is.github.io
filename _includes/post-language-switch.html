@@ -1,0 +1,33 @@
+{% assign current_lang_base = include.lang | split: '-' | first %}
+{% assign sibling_post = nil %}
+
+{% if page.translation_key %}
+  {% for post in site.posts %}
+    {% if post.url == page.url %}
+      {% continue %}
+    {% endif %}
+    {% if post.translation_key != page.translation_key %}
+      {% continue %}
+    {% endif %}
+
+    {% assign post_lang = post.lang | default: site.lang %}
+    {% assign post_lang_base = post_lang | split: '-' | first %}
+
+    {% if post_lang_base != current_lang_base %}
+      {% assign sibling_post = post %}
+      {% break %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+
+{% if sibling_post %}
+  <div class="post-meta text-muted mb-4">
+    {% if current_lang_base == 'ko' %}
+      <a href="{{ sibling_post.url | relative_url }}">Read this post in English</a>
+    {% elsif current_lang_base == 'en' %}
+      <a href="{{ sibling_post.url | relative_url }}">한국어 버전으로 보기</a>
+    {% else %}
+      <a href="{{ sibling_post.url | relative_url }}">View translation</a>
+    {% endif %}
+  </div>
+{% endif %}

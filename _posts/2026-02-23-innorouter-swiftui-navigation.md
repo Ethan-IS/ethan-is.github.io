@@ -1,6 +1,8 @@
 ---
 title: "InnoRouter: SwiftUI를 위한 타입 안전 내비게이션 프레임워크"
 date: 2026-02-23 00:00:00 +0900
+translation_key: innorouter-swiftui-navigation
+lang: ko-KR
 categories: [iOS, Swift, Architecture]
 tags: [swift, iOS, navigation, swiftui, coordinator, clean-architecture, unidirectional]
 author: ethan

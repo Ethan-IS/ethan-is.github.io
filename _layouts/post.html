@@ -19,6 +19,7 @@ script_includes:
     {% if page.description %}
       <p class="post-desc fw-light mb-4">{{ page.description }}</p>
     {% endif %}
+    {% include post-language-switch.html lang=lang %}
 
     <div class="post-meta text-muted">
       <!-- published date -->

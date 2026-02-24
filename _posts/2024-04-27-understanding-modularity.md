@@ -2,6 +2,8 @@
 title: Tuist로 확장 가능한 모듈화 하기 Part 1 - 모듈화 이해하기
 author: ethan
 date: 2024-04-27 15:40:00 +0900
+translation_key: understanding-modularity
+lang: ko-KR
 categories: [Architecture]
 tags: [tutorial, swift, tuist, iOS]
 
