@@ -25,7 +25,7 @@ respect the time of the project's developers and
 maintainers and to save their energy for other problems that really need to be resolved.
 
 - Use the [latest release version][latest-ver]. If your contribution involves code/documentation changes, update to the
-latest version of the default (`master`) branch.
+latest version of the default (`main`) branch.
 
 - Avoid making duplicate contributions by searching for existing [issues][issues] / [discussions][discus] /
 [pull requests][pr], but don't leave any unhelpful comments such as "I have the same problem". Prefer using
