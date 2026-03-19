@@ -10,644 +10,585 @@ toc: true
 comments: true
 ---
 
-## Introduction
+## Why revisit it now?
 
+The original InnoFlow post was directionally right, but it was still centered on the `v2` mental model.
 
-Since the introduction of SwiftUI, concerns about state management have deepened. Various property wrappers are provided, such as `@State`, `@StateObject`, and `@EnvironmentObject`, but as the project grows, it becomes difficult to track the flow of states. You've probably found yourself switching between files to answer the question, "Where did this state change?"
+- reducers were shown as handwritten `reduce(into:action:)`
+- examples used `Store.binding(\.field, ...)`
+- installation still pointed to `2.0.0`
+- phase-driven modeling looked like an extra feature instead of a core `v3` story
 
-**InnoFlow** is a one-way architecture framework created to solve this problem. While based on Elm Architecture, it integrates naturally with SwiftUI by actively utilizing Swift 6's `@Observable` macro.
+The actual codebase has moved. In `3.0.0`, the framework is much more explicit about what it is:
 
-## Why did you create InnoFlow?
+> InnoFlow is not a generic app state machine. It is a reducer-first framework for business and domain state transitions.
 
+The official authoring surface is now `var body: some Reducer<State, Action>`. Composition is centered on `Reduce`, `CombineReducers`, `Scope`, `IfLet`, `IfCaseLet`, and `ForEachReducer`. Phase-heavy features use `PhaseMap` as the runtime phase ownership layer.
 
-### Limitations of Existing State Management
-
-
-SwiftUI's built-in state management tools are great on a small scale. However, there are limitations in the following situations:
-
-```swift
-// State mutation logic scattered across the view
-struct ProfileView: View {
-    @State private var user: User?
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        // ...
-    }
-
-    func loadUser() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            user = try await userService.fetch()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
-    }
-}
-```
-
-This approach causes the following problems:
-
-1. **State change logic is distributed** - multiple methods modify state directly
-
-2. **Asynchronous processing complexity** - Error handling and loading state management are repeated
-
-3. **Difficult to test** - State changes are difficult to isolate and test
-
-4. **Debugging Difficulty** - Difficult to track when and why state changed
-
-
-### Why Unidirectional Architecture
-
-
-InnoFlow solves this problem through **Unidirectional Data Flow**:
-
-```
-Action → Reduce → State Mutation → Effect → Action → ...
-```
-
-All state changes are initiated via **Action** and are centralized and processed in **Reducer**. If you do this:
-
-- State change logic is **centralized**
-
-- **Cause (Action) and result (State**) of state change are clear
-
-- **Testable** Separate logic into pure functions
-
+So this update is not about polishing wording. It is about describing the framework that exists today.
 
 ---
 
-## Core Concepts
+## What InnoFlow owns, and what it does not
 
+According to the current `ARCHITECTURE_CONTRACT.md`, InnoFlow owns these areas.
 
-### 1. `@InnoFlow` macro
+| Area | Core types | Responsibility |
+|---|---|---|
+| Reducer authoring | `@InnoFlow`, `Reducer`, `Reduce`, `CombineReducers` | define state transitions through reducer composition |
+| Child composition | `Scope`, `IfLet`, `IfCaseLet`, `ForEachReducer` | compose child features explicitly |
+| SwiftUI runtime | `Store`, `ScopedStore`, `SelectedStore`, `@BindableField` | observe state and derive projections in SwiftUI |
+| Effect runtime | `EffectTask`, `EffectContext`, FIFO queue | async work, timing, cancellation |
+| Phase-driven modeling | `PhaseMap`, `PhaseTransitionGraph`, `ActionMatcher` | phase contracts for phase-heavy features |
+| Testing / observability | `TestStore`, `InnoFlowTesting`, `StoreInstrumentation` | deterministic testing and runtime instrumentation |
 
+And it intentionally does not own:
 
-When you apply the `@InnoFlow` macro to a struct, Reducer protocol compliant code is automatically generated.
+- concrete navigation stacks
+- transport, reconnect, and session lifecycle
+- construction-time dependency graphs
+- window, scene, and immersive-space runtime concerns
 
-```swift
-@InnoFlow
-struct CounterFeature {
-    // State: must conform to Sendable
-    struct State: Equatable, Sendable, DefaultInitializable {
-        var count = 0
-        @BindableField var step = 1  // bindable from SwiftUI
-    }
+That boundary matters. If a framework owns all of those concerns at once, reducers turn into giant orchestration hubs. InnoFlow 3.0 explicitly avoids that.
 
-    // Actions: events that trigger state changes
-    enum Action: Equatable, Sendable {
-        case increment
-        case decrement
-        case reset
-        case setStep(Int)
-    }
+---
 
-    // Reducer: the single place where state changes happen
-    func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
-        switch action {
-        case .increment:
-            state.count += state.step
-            return .none
-        case .decrement:
-            state.count -= state.step
-            return .none
-        case .reset:
-            state.count = 0
-            return .none
-        case .setStep(let newStep):
-            state.step = max(1, newStep)
-            return .none
-        }
-    }
-}
-```
+## The official authoring surface
 
-### 2. `Store` - Observable state container
+The biggest practical shift in `3.0` is this: the framework no longer presents handwritten `reduce(into:action:)` as the primary way to author features.
 
-
-Store is a state container that wraps a Reducer and is observable in SwiftUI.
+### `@InnoFlow` + `var body: some Reducer`
 
 ```swift
-import SwiftUI
 import InnoFlow
 
-struct CounterView: View {
-    @State private var store = Store(reducer: CounterFeature())
+@InnoFlow
+struct CounterFeature {
+  struct State: Equatable, Sendable, DefaultInitializable {
+    var count = 0
+    @BindableField var step = 1
+  }
 
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("Count: \(store.count)")
-                .font(.largeTitle)
+  enum Action: Equatable, Sendable {
+    case increment
+    case decrement
+    case setStep(Int)
+  }
 
-            HStack(spacing: 32) {
-                Button("-") { store.send(.decrement) }
-                Button("Reset") { store.send(.reset) }
-                Button("+") { store.send(.increment) }
-            }
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .increment:
+        state.count += state.step
+        return .none
 
-            Stepper(
-                "Step: \(store.step)",
-                value: store.binding(\.step, send: { .setStep($0) })
-            )
-        }
+      case .decrement:
+        state.count -= state.step
+        return .none
+
+      case .setStep(let step):
+        state.step = max(1, step)
+        return .none
+      }
     }
+  }
 }
 ```
 
-Since it is based on `@Observable`, the view is automatically updated just by accessing properties such as `store.count` and `store.step`.
+This is the official `3.0` feature shape.
 
-### 3. `EffectTask` - Unified model of asynchronous operations
+- a feature defines `State`, `Action`, and `body`
+- `@InnoFlow` generates the reducer entry point from that composition
+- the handwritten part is now domain logic and composition, not boilerplate
 
+### `Reduce` is the primitive
 
-EffectTask is a DSL that expresses asynchronous tasks declaratively.
+`Reduce` is the closure-backed primitive reducer that the rest of the surface builds on.
 
 ```swift
-// no work
-return .none
-
-// send an action immediately
-return .send(.loadingCompleted)
-
-// run asynchronous work
-return .run { send in
-    let data = try await networkService.fetch()
-    await send(.dataLoaded(data))
+Reduce<State, Action> { state, action in
+  // mutate state
+  // return EffectTask<Action>
 }
-
-// run in parallel
-return .merge(
-    .run { await send(.loadUser()) },
-    .run { await send(.loadSettings()) }
-)
-
-// run sequentially
-return .concatenate(
-    .send(.startLoading),
-    .run { /* async work */ }
-)
-
-// cancel
-return .cancel("network-request")
 ```
+
+The unidirectional model itself has not changed. State still mutates in the reducer, and effects still come back as `EffectTask<Action>`. What changed is the official authoring entry point.
 
 ---
 
-## Practical example: Todo app
+## Composition surface
 
+InnoFlow 3.0 intentionally keeps the composition surface small instead of growing multiple authoring styles.
 
-### Feature definition
+### `CombineReducers`
 
+Use `CombineReducers` to run parent logic and helper reducers in declaration order.
+
+```swift
+var body: some Reducer<State, Action> {
+  CombineReducers {
+    Reduce { state, action in
+      switch action {
+      case .load:
+        state.isLoading = true
+        return .send(.child(.start))
+      case .child(.finished):
+        state.isLoading = false
+        return .none
+      default:
+        return .none
+      }
+    }
+
+    AnalyticsReducer()
+  }
+}
+```
+
+### `Scope`
+
+Use `Scope` when child state is always present and should be lifted into the parent action space.
 
 ```swift
 @InnoFlow
-struct TodoFeature {
-    struct State: Equatable, Sendable, DefaultInitializable {
-        var todos: [Todo] = []
-        var isLoading = false
-        var errorMessage: String?
-        @BindableField var filter: Filter = .all
-    }
+struct ParentFeature {
+  struct State: Equatable, Sendable, DefaultInitializable {
+    var child = ChildFeature.State()
+    var isLoading = false
+  }
 
-    enum Action: Equatable, Sendable {
-        case loadTodos
-        case addTodo(String)
-        case toggleTodo(UUID)
-        case deleteTodo(UUID)
-        case setFilter(Filter)
+  enum Action: Equatable, Sendable {
+    case load
+    case child(ChildFeature.Action)
+  }
 
-        // Internal actions (effect output)
-        case _todosLoaded([Todo])
-        case _loadFailed(String)
-    }
-
-    // dependency injection
-    let todoService: TodoServiceProtocol
-
-    init(todoService: TodoServiceProtocol = TodoService.shared) {
-        self.todoService = todoService
-    }
-
-    func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
+  var body: some Reducer<State, Action> {
+    CombineReducers {
+      Reduce { state, action in
         switch action {
-        case .loadTodos:
-            state.isLoading = true
-            state.errorMessage = nil
-
-            let service = self.todoService
-            return .run { send in
-                do {
-                    let todos = try await service.loadTodos()
-                    await send(._todosLoaded(todos))
-                } catch {
-                    await send(._loadFailed(error.localizedDescription))
-                }
-            }
-            .cancellable("todo-load", cancelInFlight: true)
-
-        case ._todosLoaded(let todos):
-            state.todos = todos
-            state.isLoading = false
-            return .none
-
-        case ._loadFailed(let message):
-            state.errorMessage = message
-            state.isLoading = false
-            return .none
-
-        case .addTodo(let title):
-            var newTodo = Todo(title: title)
-            newTodo.id = UUID()
-            state.todos.append(newTodo)
-            return .none
-
-        case .toggleTodo(let id):
-            if let index = state.todos.firstIndex(where: { $0.id == id }) {
-                state.todos[index].isCompleted.toggle()
-            }
-            return .none
-
-        case .deleteTodo(let id):
-            state.todos.removeAll { $0.id == id }
-            return .none
-
-        case .setFilter(let filter):
-            state.filter = filter
-            return .none
+        case .load:
+          state.isLoading = true
+          return .send(.child(.start))
+        case .child(.finished):
+          state.isLoading = false
+          return .none
+        default:
+          return .none
         }
+      }
+
+      Scope(
+        state: \.child,
+        action: .childCasePath,
+        reducer: ChildFeature()
+      )
     }
+  }
 }
 ```
 
-### SwiftUI View
+With `@InnoFlow`, cases like `case child(ChildFeature.Action)` synthesize `childCasePath` automatically.
 
+### `IfLet`, `IfCaseLet`, `ForEachReducer`
 
-```swift
-struct TodoView: View {
-    @State private var store = Store(
-        reducer: TodoFeature(todoService: TodoService.shared)
-    )
+These complete the official child-composition set:
 
-    var filteredTodos: [Todo] {
-        switch store.filter {
-        case .all: return store.todos
-        case .active: return store.todos.filter { !$0.isCompleted }
-        case .completed: return store.todos.filter { $0.isCompleted }
-        }
-    }
+- `IfLet` for optional child state
+- `IfCaseLet` for enum-backed child state
+- `ForEachReducer` for collection-backed child state
 
-    var body: some View {
-        NavigationStack {
-            Group {
-                if store.isLoading {
-                    ProgressView("Loading...")
-                } else {
-                    List {
-                        ForEach(filteredTodos) { todo in
-                            TodoRowView(todo: todo) {
-                                store.send(.toggleTodo(todo.id))
-                            }
-                        }
-                        .onDelete { indexSet in
-                            for index in indexSet {
-                                store.send(.deleteTodo(filteredTodos[index].id))
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Todos")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Picker("Filter", selection: store.binding(\.filter, send: { .setFilter($0) })) {
-                        Text("All").tag(Filter.all)
-                        Text("Active").tag(Filter.active)
-                        Text("Completed").tag(Filter.completed)
-                    }
-                    .pickerStyle(.menu)
-                }
-            }
-            .alert("Error", isPresented: .constant(store.errorMessage != nil)) {
-                Button("OK") { store.send(.loadTodos) }
-            } message: {
-                if let error = store.errorMessage {
-                    Text(error)
-                }
-            }
-            .task {
-                store.send(.loadTodos)
-            }
-        }
-    }
-}
-```
+That is a meaningful part of the `3.0` story. Child reducer composition is no longer a pattern each team has to reinvent.
 
 ---
 
-## Advanced features of EffectTask
+## SwiftUI runtime
 
+### `Store` is a SwiftUI-first runtime
 
-### Debounce and Throttle
-
-
-This is useful for handling user input.
+The basic usage is still simple.
 
 ```swift
-case .searchTextChanged(let text):
-    state.searchText = text
+import InnoFlow
+import SwiftUI
 
-    let service = self.searchService
-    return .run { send in
-        let results = try await service.search(text)
-        await send(.searchResultsLoaded(results))
+struct CounterView: View {
+  @State private var store: Store<CounterFeature>
+
+  init(store: Store<CounterFeature> = Store(reducer: CounterFeature())) {
+    _store = State(initialValue: store)
+  }
+
+  var body: some View {
+    VStack(spacing: 20) {
+      Text("Count: \(store.count)")
+        .font(.largeTitle)
+
+      HStack(spacing: 24) {
+        Button("−") { store.send(.decrement) }
+        Button("+") { store.send(.increment) }
+      }
+
+      Stepper(
+        "Step: \(store.step)",
+        value: store.binding(\.$step, send: CounterFeature.Action.setStep)
+      )
     }
-    .debounce("search", for: .milliseconds(300))
-    // run 300ms after the user stops typing
+  }
+}
 ```
 
+The binding syntax is one of the concrete `v3` updates:
+
+- older style: `store.binding(\.step, ...)`
+- current style: `store.binding(\.$step, ...)`
+
+Bindings are intentionally explicit opt-in. Only `@BindableField` properties participate in SwiftUI binding.
+
+### `ScopedStore`
+
+Mutable child flows use `ScopedStore`.
+
 ```swift
-case .refreshPulled:
-    return .run { /* refresh logic */ }
-    .throttle("refresh", for: .seconds(1), leading: false, trailing: true)
-    // ignore additional requests within 1 second
+let child = store.scope(state: \.child, action: .childCasePath)
 ```
 
-### animated movie
+That is different from a read-only projection. It creates a mutable child boundary that participates in the store runtime.
 
+### `SelectedStore`
 
-Apply animation when state changes.
+For expensive read-only derived values, `SelectedStore` is now the official path.
 
 ```swift
-case .addItem:
-    state.items.append(newItem)
-    return .none
-    .animation(.spring())
+let summary = store.select(dependingOn: (\.profile, \.permissions)) { profile, permissions in
+  DashboardBadge(
+    title: profile.name,
+    isReady: profile.isReady && permissions.isReady
+  )
+}
 ```
 
-### Cancellable Action
+This is not just a convenience memoization trick. It is the documented way to let large SwiftUI views observe only an `Equatable` projection.
 
+The rule of thumb is:
 
-Manage long-running tasks.
+- mutable child flow -> `ScopedStore`
+- read-only derived value -> `SelectedStore`
+- one to three explicit dependency slices -> `select(dependingOn:)`
+- otherwise -> `select { ... }` as the always-refresh fallback
+
+### Preview
+
+The canonical preview entry point is `Store.preview(...)`.
 
 ```swift
-case .startLongTask:
-    return .run { send in
-        // long-running task
+#Preview("Counter") {
+  CounterView(
+    store: .preview(
+      reducer: CounterFeature(),
+      initialState: .init(count: 3, step: 2)
+    )
+  )
+}
+```
+
+That keeps preview-only setup explicit without changing production store wiring.
+
+---
+
+## Effect runtime
+
+`EffectTask<Action>` remains the only effect DSL:
+
+- `.none`
+- `.send(action)`
+- `.run { send, context in ... }`
+- `.merge(...)`
+- `.concatenate(...)`
+- `.cancel(id)`
+- `.cancellable(id:cancelInFlight:)`
+- `.debounce(id:for:)`
+- `.throttle(id:for:leading:trailing:)`
+- `.animation(_:)`
+
+But the important `3.0` story is the runtime contract around it.
+
+### `EffectContext`
+
+New code should prefer `.run { send, context in ... }`.
+
+```swift
+return .run { send, context in
+  do {
+    try await context.sleep(for: .milliseconds(300))
+    try await context.checkCancellation()
+    await send(.finished)
+  } catch is CancellationError {
+    return
+  }
+}
+```
+
+That matters because:
+
+- `StoreClock` controls both scheduling operators and explicit delays
+- tests stay deterministic
+- cancellation checks stop spreading as ad hoc code
+
+### FIFO queue semantics
+
+`Store` dispatches reducer input and effect follow-up actions through a single FIFO queue.
+
+| Behavior | Meaning |
+|---|---|
+| `.send` | immediate follow-up, but queued rather than reducer-reentrant |
+| `.run` | re-enters the same queue after its suspension boundary |
+| `.concatenate` | preserves declaration order |
+| `.merge` | observes child completion order |
+
+In other words, effect ordering is documented runtime behavior, not incidental implementation detail.
+
+### `StoreInstrumentation`
+
+`3.0` also gives observability a clearer public surface.
+
+```swift
+let instrumentation: StoreInstrumentation<Feature.Action> = .combined(
+  .osLog(logger: logger),
+  .sink { event in
+    switch event {
+    case .runStarted:
+      metrics.increment("feature.effect.run_started")
+    case .runFinished:
+      metrics.increment("feature.effect.run_finished")
+    case .actionEmitted:
+      metrics.increment("feature.effect.emitted")
+    case .actionDropped:
+      metrics.increment("feature.effect.dropped")
+    case .effectsCancelled:
+      metrics.increment("feature.effect.cancelled")
     }
-    .cancellable("long-task", cancelInFlight: true)
-
-case .cancelTask:
-    return .cancel("long-task")
+  }
+)
 ```
+
+The design intent is clear: backend-specific metrics or traces should plug into `sink`, `osLog`, or `combined`, not alter reducer semantics.
+
+---
+
+## Phase-driven modeling
+
+This is the most visible new chapter in InnoFlow 3.0, but it is easy to misunderstand.
+
+> `PhaseMap` is the runtime phase ownership layer. `PhaseTransitionGraph` is the topology validation tool.
+
+That does not turn InnoFlow into a generic FSM runtime.
+
+### `PhaseMap`
+
+```swift
+@InnoFlow
+struct ItemsFeature {
+  struct State: Equatable, Sendable, DefaultInitializable {
+    enum Phase: Hashable, Sendable {
+      case idle
+      case loading
+      case loaded
+      case failed
+    }
+
+    var phase: Phase = .idle
+    var items: [Item] = []
+    var errorMessage: String?
+  }
+
+  enum Action: Equatable, Sendable {
+    case load
+    case _loaded([Item])
+    case _failed(String)
+  }
+
+  static var phaseMap: PhaseMap<State, Action, State.Phase> {
+    PhaseMap(\.phase) {
+      From(.idle) {
+        On(.load, to: .loading)
+      }
+      From(.loading) {
+        On(Action.loadedCasePath, to: .loaded)
+        On(Action.failedCasePath, to: .failed)
+      }
+      From(.loaded) {
+        On(.load, to: .loading)
+      }
+      From(.failed) {
+        On(.load, to: .loading)
+      }
+    }
+  }
+
+  static var phaseGraph: PhaseTransitionGraph<State.Phase> {
+    phaseMap.derivedGraph
+  }
+
+  var body: some Reducer<State, Action> {
+    let phaseMap: PhaseMap<State, Action, State.Phase> = Self.phaseMap
+
+    return Reduce { state, action in
+      switch action {
+      case .load:
+        return .none
+      case ._loaded(let items):
+        state.items = items
+        return .none
+      case ._failed(let message):
+        state.errorMessage = message
+        return .none
+      }
+    }
+    .phaseMap(phaseMap)
+  }
+}
+```
+
+The important rules are:
+
+- `PhaseMap` runs after the base reducer
+- once active, `PhaseMap` owns the declared phase key path
+- unmatched phase/action pairs remain legal no-ops by default
+- stronger coverage is opt-in in tests, not a forced runtime rule
+
+### When to use it
+
+- when a feature already has a meaningful phase enum
+- when legal transitions are part of the business contract
+- when imperative `state.phase = ...` writes are spreading across reducer branches
+
+### When not to use it
+
+- route stacks
+- session lifecycle
+- reconnect or transport retries
+- dependency graph wiring
+- generic effect bookkeeping
+
+### `PhaseTransitionGraph`
+
+`PhaseTransitionGraph` is for static topology validation.
+
+```swift
+let report = ItemsFeature.phaseGraph.validationReport(
+  allPhases: [.idle, .loading, .loaded, .failed],
+  root: .idle,
+  terminalPhases: [.loaded]
+)
+
+precondition(report.issues.isEmpty)
+```
+
+When phase movement depends on payload-bearing actions, the current docs prefer case-path based `On(...)` rules and `ActionMatcher`-style matching over ad hoc graph metadata.
+
+The graph is deliberately kept focused on validation. Guard-bearing transition metadata and runtime conditional resolution stay out of it on purpose.
+
+`validatePhaseTransitions(...)` still exists, but it is now a backward-compatibility surface, not the recommended one for new examples.
 
 ---
 
 ## Testing
 
-
-InnoFlow supports deterministic testing through `TestStore`.
+`TestStore` remains central, but `3.0` makes phase-aware testing a much more explicit part of the story.
 
 ```swift
-import Testing
 import InnoFlowTesting
 
-@Suite("TodoFeature Tests")
+@Test
 @MainActor
-struct TodoFeatureTests {
+func loadFlow() async {
+  let store = TestStore(reducer: ItemsFeature())
 
-    @Test("Add todo")
-    func testAddTodo() async {
-        let store = TestStore(
-            reducer: TodoFeature(todoService: MockTodoService())
-        )
+  let phaseMap: PhaseMap<ItemsFeature.State, ItemsFeature.Action, ItemsFeature.State.Phase> =
+    ItemsFeature.phaseMap
 
-        await store.send(.addTodo("New todo")) {
-            $0.todos.count = 1
-            $0.todos.first?.title = "New todo"
-        }
+  await store.send(.load, through: phaseMap) {
+    $0.phase = .loading
+  }
 
-        await store.assertNoMoreActions()
-    }
-
-    @Test("Todo loading flow")
-    func testLoadTodosFlow() async {
-        let mockService = MockTodoService()
-        mockService.mockTodos = [
-            Todo(id: UUID(), title: "Test todo")
-        ]
-
-        let store = TestStore(
-            reducer: TodoFeature(todoService: mockService)
-        )
-
-        // Send action and assert state changes
-        await store.send(.loadTodos) {
-            $0.isLoading = true
-            $0.errorMessage = nil
-        }
-
-        // Verify action emitted from effect
-        await store.receive(._todosLoaded(mockService.mockTodos)) {
-            $0.todos = mockService.mockTodos
-            $0.isLoading = false
-        }
-
-        await store.assertNoMoreActions()
-    }
+  await store.receive(._loaded(items), through: phaseMap) {
+    $0.phase = .loaded
+    $0.items = items
+  }
 }
 ```
 
-### Benefits of Testing
+The important part is `through: phaseMap`. A phase-heavy feature can now test reducer behavior and documented phase ownership through the same public surface.
 
+A few other testing points are worth calling out:
 
-1. **Pure function test** - Reducer is a pure function without side effects
+- project child tests from a parent `TestStore` with `scope(state:action:)`
+- inject `StoreClock.manual(...)` for debounce/throttle and delay control
+- diff-oriented mismatch diagnostics make reducer failures easier to read
 
-2. **Time independent** - even asynchronous operations can be tested deterministically
-
-3. **State Snapshot** - Clearly verify the state after each action
-
-
----
-
-## Store Scope - Parent-child state isolation
-
-
-For large apps, it's a good idea to separate Stores into functional units. InnoFlow can create a child Store from a parent Store through `scope`.
-
-```swift
-// Parent feature
-@InnoFlow
-struct AppFeature {
-    struct State: Equatable, Sendable {
-        var todo: TodoFeature.State = .init()
-        var profile: ProfileFeature.State = .init()
-    }
-
-    enum Action {
-        case todo(TodoFeature.Action)
-        case profile(ProfileFeature.Action)
-    }
-
-    func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
-        switch action {
-        case .todo(let todoAction):
-            // Delegate to child feature
-            return TodoFeature().reduce(into: &state.todo, action: todoAction)
-                .map { Action.todo($0) }
-
-        case .profile(let profileAction):
-            return ProfileFeature().reduce(into: &state.profile, action: profileAction)
-                .map { Action.profile($0) }
-        }
-    }
-}
-
-// Use scope in child view
-struct TodoSectionView: View {
-    let store: Store<AppFeature>
-
-    var body: some View {
-        TodoFeatureView(
-            store: store.scope(
-                state: \.todo,
-                action: AppFeature.Action.todo
-            )
-        )
-    }
-}
-```
+Testing moved closer to "verify the documented contract" and further away from "poke the runtime and hope it behaves."
 
 ---
 
-## Comparison with other frameworks
+## Which surface should you use?
 
+| Situation | Recommended surface |
+|---|---|
+| simple feature logic | `@InnoFlow` + `Reduce` |
+| parent/child composition | `CombineReducers` + `Scope` |
+| optional child | `IfLet` |
+| enum-backed child | `IfCaseLet` |
+| collection-backed child | `ForEachReducer` |
+| mutable child flow | `ScopedStore` |
+| read-only expensive projection | `SelectedStore` |
+| phase-heavy feature | `PhaseMap` + `phaseMap.derivedGraph` |
+| runtime observability | `StoreInstrumentation` |
+| previews and review passes | `Store.preview(...)` |
 
-| function | InnoFlow | TCA | ReactorKit | MVVM |
-|------|----------|-----|------------|------|
-| learning curve | lowness | height | middle | lowness |
-| SwiftUI integration | native | native | Need Rx | passivity |
-| boiler plate | less | plenty | middle | less |
-| Testability | height | height | height | middle |
-| Status traceability | height | height | height | lowness |
-| Effect Management | DSL | complication | Rx-based | passivity |
-
-### What InnoFlow pursues
-
-
-- **Practical**: Retains the power of TCA, but lowers the learning curve
-
-- **SwiftUI First**: Natural integration by actively utilizing `@Observable`
-
-- **Clear runtime model**: Effect lifecycle and cancellation are clear
-
+That table captures the design intent well. InnoFlow is not a "one giant store" framework. It is a framework that keeps reducer composition, state ownership, and runtime behavior explicit.
 
 ---
 
-## development philosophy
-
-
-### v2 design principles
-
-
-InnoFlow v2 has been redesigned based on the following principles:
-
-1. **Single Reducer Contract** - `reduce(into:action:) -> EffectTask<Action>` combined into one
-
-2. **Explicit asynchronous model** - run/merge/concatenate/cancel integration with EffectTask DSL
-
-3. **Cancellation completion contract** - Store cancellation API is async, ensuring deterministic cleanup
-
-4. **SwiftUI First Runtime** - `@Observable` Store + `@MainActor` Adapter
-
-5. **Strict binding intent** - Only the `@BindableField` property can be bound in SwiftUI
-
-6. **Deterministic Testing** - Timeout/Cancellation Oriented TestStore
-
-
-### Why did you make this choice?
-
-
-These choices were made to solve problems in the previous architecture:
-
-- Force all changes to go through Action to prevent **implicit state changes**
-
-- Treat Effect as a first-class object to avoid **untraceable asynchrony**
-
-- Keep Reducer as a pure function to eliminate **untestable logic**
-
-- Explicit opt-in with `@BindableField` to prevent **spaghetti binding**
-
-
----
-
-## Installation
-
-
-### Swift Package Manager
-
+## Installation and requirements
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/InnoSquadCorp/InnoFlow.git", from: "2.0.0")
+  .package(url: "https://github.com/InnoSquadCorp/InnoFlow.git", from: "3.0.0")
 ]
 ```
 
-### Requirements
+Current package requirements:
 
+- iOS 18+
+- macOS 15+
+- tvOS 18+
+- watchOS 11+
+- visionOS 2+
+- Swift tools 6.2
 
-- iOS 18.0+ / macOS 15.0+ / tvOS 18.0+ / watchOS 11.0+
-
-- Swift 6.2+
-
-
----
-
-## Conclusion
-
-
-InnoFlow aims for **a practical one-way architecture suitable for the SwiftUI era**.
-
-### Recommended for
-
-
-- SwiftUI developer concerned about **state management complexity**
-
-- Team looking for **testable architecture**
-
-- **Those who feel that TCA is too complicated**
-
-- Swift developer interested in **Elm Architecture**
-
-
-### Summary of InnoFlow Benefits
-
-
-1. **@InnoFlow Macro** - Define Reducer without boilerplate
-
-2. **@Observable Store** - Natural integration with SwiftUI
-
-3. **EffectTask DSL** - Declarative asynchronous task management
-
-4. **TestStore** - Supports deterministic testing
-
-5. **@BindableField** - explicit and safe binding
-
-6. **Low learning curve** - Leverage existing SwiftUI knowledge
-
-
-As soon as state management becomes complex, consider InnoFlow. Experience the predictability and testability of one-way data flow.
+If tests need `TestStore`, `ManualTestClock`, and phase-aware helpers, add `InnoFlowTesting` to the test target as well.
 
 ---
 
-## Reference Materials
+## Closing thoughts
 
+The shortest accurate description of InnoFlow today is this:
+
+> InnoFlow is less a "SwiftUI state management library" and more a reducer-first framework that organizes business and domain transitions around explicit runtime contracts.
+
+That is why `3.0` feels different.
+
+1. feature authoring is now clearly centered on reducer body composition
+2. child composition is standardized around the `Scope` family
+3. SwiftUI runtime surfaces like `SelectedStore`, `Store.preview`, and `StoreInstrumentation` are much sharper
+4. `PhaseMap` and `PhaseTransitionGraph` make phase-heavy features easier to document and validate
+5. navigation, session lifecycle, and dependency graph ownership remain outside the framework boundary
+
+If your state logic is getting more complex but you do not want every app concern shoved into one giant state machine, InnoFlow 3.0 offers a more disciplined balance.
+
+## References
 
 - [InnoFlow GitHub Repository](https://github.com/InnoSquadCorp/InnoFlow)
-
-- [InnoFlow API Documentation (DocC)](https://innosquad-mdd.github.io/InnoFlow/documentation/innoflow/)
-
-- [Elm Architecture](https://guide.elm-lang.org/architecture/)
-
-- [TCA (The Composable Architecture)](https://github.com/pointfreeco/swift-composable-architecture)
+- [Architecture Contract](https://github.com/InnoSquadCorp/InnoFlow/blob/main/ARCHITECTURE_CONTRACT.md)
+- [Phase-Driven Modeling](https://github.com/InnoSquadCorp/InnoFlow/blob/main/PHASE_DRIVEN_MODELING.md)
+- [Canonical Sample App](https://github.com/InnoSquadCorp/InnoFlow/tree/main/Examples/InnoFlowSampleApp)
