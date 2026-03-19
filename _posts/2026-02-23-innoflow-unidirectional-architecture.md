@@ -10,576 +10,585 @@ toc: true
 comments: true
 ---
 
-## 들어가며
+## 왜 다시 봐야 할까요?
 
-SwiftUI가 도입된 이후, 상태 관리에 대한 고민은 깊어졌습니다. `@State`, `@StateObject`, `@EnvironmentObject` 등 다양한 프로퍼티 래퍼가 제공되지만, 프로젝트가 커질수록 상태의 흐름을 추적하기 어려워집니다. "이 상태가 어디서 변경되었지?"라는 질문에 답하기 위해 여러 파일을 오가는 경험, 한 번쯤 있으실 겁니다.
+기존 `InnoFlow` 소개 글은 분명 맞는 설명이었습니다. 다만 중심이 `v2` 시절 문법에 머물러 있었습니다.
 
-**InnoFlow**는 이 문제를 해결하기 위해 만들어진 단방향 아키텍처 프레임워크입니다. Elm Architecture를 기반으로 하면서도, Swift 6의 `@Observable` 매크로를 적극 활용해 SwiftUI와 자연스럽게 통합됩니다.
+- reducer를 `reduce(into:action:)`로 직접 작성하는 방식
+- `Store.binding(\.field, ...)` 중심의 예제
+- `2.0.0` 패키지 버전
+- phase-driven modeling을 부가 기능처럼 다루는 설명
 
-## 왜 InnoFlow를 만들었나요?
+실제 `InnoFlow` 코드베이스는 `3.0.0`에서 방향이 더 명확해졌습니다.
 
-### 기존 상태 관리의 한계
+> InnoFlow는 generic app state machine이 아니라, 비즈니스와 도메인 상태 전환을 위한 reducer-first framework입니다.
 
-SwiftUI의 기본 상태 관리 도구들은 작은 규모에서는 훌륭합니다. 하지만 다음과 같은 상황에서는 한계를 맞이합니다:
+공식 authoring surface는 이제 `var body: some Reducer<State, Action>`입니다. composition은 `Reduce`, `CombineReducers`, `Scope`, `IfLet`, `IfCaseLet`, `ForEachReducer` 중심으로 정리됐고, phase-heavy feature는 `PhaseMap`이 runtime phase ownership을 맡습니다.
 
-```swift
-// 뷰 곳곳에 흩어진 상태 변경 로직
-struct ProfileView: View {
-    @State private var user: User?
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        // ...
-    }
-
-    func loadUser() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            user = try await userService.fetch()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
-    }
-}
-```
-
-이런 방식은 다음과 같은 문제를 야기합니다:
-
-1. **상태 변경 로직이 분산됨** - 여러 메서드에서 상태를 직접 수정
-2. **비동기 처리 복잡도** - 에러 처리, 로딩 상태 관리가 반복됨
-3. **테스트 어려움** - 상태 변경을 격리해서 테스트하기 까다로움
-4. **디버깅 난이도** - 상태가 언제, 왜 변경되었는지 추적하기 어려움
-
-### 단방향 아키텍처의 답
-
-InnoFlow는 **단방향 데이터 흐름(Unidirectional Data Flow)**을 통해 이 문제를 해결합니다:
-
-```
-Action → Reduce → State Mutation → Effect → Action → ...
-```
-
-모든 상태 변경은 **Action**을 통해 시작되고, **Reducer**에서 한 곳에 모여 처리됩니다. 이렇게 하면:
-
-- 상태 변경 로직이 **한 곳에 집중**됨
-- 상태 변경의 **원인(Action)과 결과(State)**가 명확함
-- **테스트 가능한** 순수 함수로 로직을 분리 가능
+즉, 이번 업데이트의 핵심은 "단방향 상태관리 프레임워크"라는 추상적인 소개를 넘어서, 현재 InnoFlow가 실제로 무엇을 소유하고 어떤 방식으로 쓰이도록 설계되었는지 다시 설명하는 데 있습니다.
 
 ---
 
-## 핵심 개념
+## InnoFlow가 소유하는 것과 소유하지 않는 것
 
-### 1. `@InnoFlow` 매크로
+현재 `ARCHITECTURE_CONTRACT.md` 기준으로 InnoFlow는 아래 영역을 소유합니다.
 
-`@InnoFlow` 매크로를 struct에 적용하면, Reducer 프로토콜 준수 코드가 자동으로 생성됩니다.
+| 영역 | 핵심 타입 | 설명 |
+|---|---|---|
+| Reducer authoring | `@InnoFlow`, `Reducer`, `Reduce`, `CombineReducers` | 상태 전환 로직을 reducer body로 정의 |
+| Child composition | `Scope`, `IfLet`, `IfCaseLet`, `ForEachReducer` | 자식 feature를 명시적으로 합성 |
+| SwiftUI runtime | `Store`, `ScopedStore`, `SelectedStore`, `@BindableField` | SwiftUI에서 상태를 관찰하고 파생 projection을 다루는 계층 |
+| Effect runtime | `EffectTask`, `EffectContext`, FIFO queue | 비동기 작업, 취소, 시간 제어 |
+| Phase-driven modeling | `PhaseMap`, `PhaseTransitionGraph`, `ActionMatcher` | 의미 있는 phase를 가진 feature의 전환 계약 |
+| Testing / observability | `TestStore`, `InnoFlowTesting`, `StoreInstrumentation` | 결정론적 테스트와 runtime 계측 |
 
-```swift
-@InnoFlow
-struct CounterFeature {
-    // 상태: 반드시 Sendable이어야 함
-    struct State: Equatable, Sendable, DefaultInitializable {
-        var count = 0
-        @BindableField var step = 1  // SwiftUI 바인딩 가능
-    }
+반대로 아래는 InnoFlow가 의도적으로 소유하지 않습니다.
 
-    // 액션: 상태 변경을 유발하는 이벤트
-    enum Action: Equatable, Sendable {
-        case increment
-        case decrement
-        case reset
-        case setStep(Int)
-    }
+- concrete navigation stack
+- transport, reconnect, session lifecycle
+- construction-time dependency graph
+- window, scene, immersive space 같은 앱 런타임 경계
 
-    // Reducer: 상태 변경 로직의 유일한 장소
-    func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
-        switch action {
-        case .increment:
-            state.count += state.step
-            return .none
-        case .decrement:
-            state.count -= state.step
-            return .none
-        case .reset:
-            state.count = 0
-            return .none
-        case .setStep(let newStep):
-            state.step = max(1, newStep)
-            return .none
-        }
-    }
-}
-```
+이 경계가 중요한 이유는 단순합니다. InnoFlow가 모든 앱 상태를 가져가면 오히려 reducer가 거대한 orchestration 허브가 됩니다. `3.0`의 문서들은 이걸 분명히 피합니다.
 
-### 2. `Store` - 관찰 가능한 상태 컨테이너
+---
 
-Store는 Reducer를 감싸고 SwiftUI에서 관찰 가능한 상태 컨테이너입니다.
+## 공식 authoring surface
+
+`3.0`에서 가장 먼저 바뀐 감각은 여기입니다. 이제 feature를 설명할 때 `reduce(into:action:)`를 먼저 보여주기보다 `body` 기반 reducer composition을 보여주는 것이 맞습니다.
+
+### `@InnoFlow` + `var body: some Reducer`
 
 ```swift
-import SwiftUI
 import InnoFlow
 
-struct CounterView: View {
-    @State private var store = Store(reducer: CounterFeature())
+@InnoFlow
+struct CounterFeature {
+  struct State: Equatable, Sendable, DefaultInitializable {
+    var count = 0
+    @BindableField var step = 1
+  }
 
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("Count: \(store.count)")
-                .font(.largeTitle)
+  enum Action: Equatable, Sendable {
+    case increment
+    case decrement
+    case setStep(Int)
+  }
 
-            HStack(spacing: 32) {
-                Button("-") { store.send(.decrement) }
-                Button("Reset") { store.send(.reset) }
-                Button("+") { store.send(.increment) }
-            }
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .increment:
+        state.count += state.step
+        return .none
 
-            Stepper(
-                "Step: \(store.step)",
-                value: store.binding(\.step, send: { .setStep($0) })
-            )
-        }
+      case .decrement:
+        state.count -= state.step
+        return .none
+
+      case .setStep(let step):
+        state.step = max(1, step)
+        return .none
+      }
     }
+  }
 }
 ```
 
-`@Observable` 기반이므로, `store.count`, `store.step` 같은 프로퍼티 접근만으로도 자동으로 뷰가 갱신됩니다.
+이게 `3.0`에서 말하는 공식 feature authoring입니다.
 
-### 3. `EffectTask` - 비동기 작업의 통합 모델
+- feature는 `State`, `Action`, `body`를 가진다
+- `@InnoFlow`는 이 구조를 기반으로 필요한 reducer entry point를 생성한다
+- 사람이 직접 써야 하는 부분은 composition과 domain logic이지, boilerplate가 아니다
 
-EffectTask는 비동기 작업을 선언적으로 표현하는 DSL입니다.
+### `Reduce`는 primitive reducer다
+
+`Reduce`는 closure 기반 primitive reducer입니다. InnoFlow의 다른 composition surface도 결국 여기에 얹힙니다.
 
 ```swift
-// 작업 없음
-return .none
-
-// 즉시 액션 전송
-return .send(.loadingCompleted)
-
-// 비동기 작업 실행
-return .run { send in
-    let data = try await networkService.fetch()
-    await send(.dataLoaded(data))
+Reduce<State, Action> { state, action in
+  // mutate state
+  // return EffectTask<Action>
 }
-
-// 병렬 실행
-return .merge(
-    .run { await send(.loadUser()) },
-    .run { await send(.loadSettings()) }
-)
-
-// 순차 실행
-return .concatenate(
-    .send(.startLoading),
-    .run { /* 비동기 작업 */ }
-)
-
-// 취소
-return .cancel("network-request")
 ```
+
+핵심은 여전히 같습니다. 상태는 reducer 안에서만 바뀌고, effect는 `EffectTask<Action>`로 돌아옵니다. 다만 `3.0`은 그 진입점을 `body` composition으로 통일했습니다.
 
 ---
 
-## 실전 예제: Todo 앱
+## Composition surface
 
-### Feature 정의
+InnoFlow 3.0은 여러 authoring 스타일을 늘리는 대신, 작은 composition surface를 공식 경로로 고정했습니다.
+
+### `CombineReducers`
+
+부모 logic과 보조 reducer를 선언 순서대로 결합합니다.
+
+```swift
+var body: some Reducer<State, Action> {
+  CombineReducers {
+    Reduce { state, action in
+      switch action {
+      case .load:
+        state.isLoading = true
+        return .send(.child(.start))
+      case .child(.finished):
+        state.isLoading = false
+        return .none
+      default:
+        return .none
+      }
+    }
+
+    AnalyticsReducer()
+  }
+}
+```
+
+### `Scope`
+
+항상 존재하는 child state를 부모 action 공간으로 끌어올릴 때 씁니다.
 
 ```swift
 @InnoFlow
-struct TodoFeature {
-    struct State: Equatable, Sendable, DefaultInitializable {
-        var todos: [Todo] = []
-        var isLoading = false
-        var errorMessage: String?
-        @BindableField var filter: Filter = .all
-    }
+struct ParentFeature {
+  struct State: Equatable, Sendable, DefaultInitializable {
+    var child = ChildFeature.State()
+    var isLoading = false
+  }
 
-    enum Action: Equatable, Sendable {
-        case loadTodos
-        case addTodo(String)
-        case toggleTodo(UUID)
-        case deleteTodo(UUID)
-        case setFilter(Filter)
+  enum Action: Equatable, Sendable {
+    case load
+    case child(ChildFeature.Action)
+  }
 
-        // 내부 액션 (Effect 결과)
-        case _todosLoaded([Todo])
-        case _loadFailed(String)
-    }
-
-    // 의존성 주입
-    let todoService: TodoServiceProtocol
-
-    init(todoService: TodoServiceProtocol = TodoService.shared) {
-        self.todoService = todoService
-    }
-
-    func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
+  var body: some Reducer<State, Action> {
+    CombineReducers {
+      Reduce { state, action in
         switch action {
-        case .loadTodos:
-            state.isLoading = true
-            state.errorMessage = nil
-
-            let service = self.todoService
-            return .run { send in
-                do {
-                    let todos = try await service.loadTodos()
-                    await send(._todosLoaded(todos))
-                } catch {
-                    await send(._loadFailed(error.localizedDescription))
-                }
-            }
-            .cancellable("todo-load", cancelInFlight: true)
-
-        case ._todosLoaded(let todos):
-            state.todos = todos
-            state.isLoading = false
-            return .none
-
-        case ._loadFailed(let message):
-            state.errorMessage = message
-            state.isLoading = false
-            return .none
-
-        case .addTodo(let title):
-            var newTodo = Todo(title: title)
-            newTodo.id = UUID()
-            state.todos.append(newTodo)
-            return .none
-
-        case .toggleTodo(let id):
-            if let index = state.todos.firstIndex(where: { $0.id == id }) {
-                state.todos[index].isCompleted.toggle()
-            }
-            return .none
-
-        case .deleteTodo(let id):
-            state.todos.removeAll { $0.id == id }
-            return .none
-
-        case .setFilter(let filter):
-            state.filter = filter
-            return .none
+        case .load:
+          state.isLoading = true
+          return .send(.child(.start))
+        case .child(.finished):
+          state.isLoading = false
+          return .none
+        default:
+          return .none
         }
+      }
+
+      Scope(
+        state: \.child,
+        action: .childCasePath,
+        reducer: ChildFeature()
+      )
     }
+  }
 }
 ```
 
-### SwiftUI 뷰
+`@InnoFlow`가 붙어 있으면 `case child(ChildFeature.Action)` 같은 케이스에서 `childCasePath`를 자동 합성해 줍니다.
+
+### `IfLet`, `IfCaseLet`, `ForEachReducer`
+
+이 세 가지는 child composition의 조건부/컬렉션 버전입니다.
+
+- `IfLet`: optional child state
+- `IfCaseLet`: enum case로 열리는 child state
+- `ForEachReducer`: collection row reducer
+
+이 surface가 중요한 이유는 "child reducer를 어떻게 올릴지"가 더 이상 팀마다 다르게 흩어지지 않기 때문입니다.
+
+---
+
+## SwiftUI runtime
+
+### `Store`는 SwiftUI-first runtime이다
+
+기본 사용법은 여전히 단순합니다.
 
 ```swift
-struct TodoView: View {
-    @State private var store = Store(
-        reducer: TodoFeature(todoService: TodoService.shared)
+import InnoFlow
+import SwiftUI
+
+struct CounterView: View {
+  @State private var store: Store<CounterFeature>
+
+  init(store: Store<CounterFeature> = Store(reducer: CounterFeature())) {
+    _store = State(initialValue: store)
+  }
+
+  var body: some View {
+    VStack(spacing: 20) {
+      Text("Count: \(store.count)")
+        .font(.largeTitle)
+
+      HStack(spacing: 24) {
+        Button("−") { store.send(.decrement) }
+        Button("+") { store.send(.increment) }
+      }
+
+      Stepper(
+        "Step: \(store.step)",
+        value: store.binding(\.$step, send: CounterFeature.Action.setStep)
+      )
+    }
+  }
+}
+```
+
+여기서 바뀐 포인트는 binding 문법입니다. `3.0` 기준 문서는 projected key path를 사용합니다.
+
+- 예전 설명: `store.binding(\.step, ...)`
+- 현재 surface: `store.binding(\.$step, ...)`
+
+binding도 의도적으로 explicit opt-in입니다. `@BindableField`가 붙은 프로퍼티만 SwiftUI에서 바인딩할 수 있습니다.
+
+### `ScopedStore`
+
+mutable child flow는 `ScopedStore`로 가져갑니다.
+
+```swift
+let child = store.scope(state: \.child, action: .childCasePath)
+```
+
+이건 "부모 상태 일부를 자식 뷰에 그냥 넘긴다"는 감각보다, 자식 feature에 맞는 mutable scope를 별도로 만든다는 개념에 가깝습니다.
+
+### `SelectedStore`
+
+반대로 read-only derived value는 `SelectedStore`가 공식 경로입니다.
+
+```swift
+let summary = store.select(dependingOn: (\.profile, \.permissions)) { profile, permissions in
+  DashboardBadge(
+    title: profile.name,
+    isReady: profile.isReady && permissions.isReady
+  )
+}
+```
+
+`SelectedStore`가 중요한 이유는 단순 memoization이 아니라, 큰 SwiftUI 뷰에서 비싼 `Equatable` projection만 선택적으로 refresh하게 만들기 때문입니다.
+
+선택 기준은 이렇습니다.
+
+- mutable child flow면 `ScopedStore`
+- read-only projection이면 `SelectedStore`
+- 의존 slice를 1~3개로 명시할 수 있으면 `select(dependingOn:)`
+- 그게 안 되면 `select { ... }`를 always-refresh fallback으로 사용
+
+### Preview
+
+현재 canonical preview entry point는 `Store.preview(...)`입니다.
+
+```swift
+#Preview("Counter") {
+  CounterView(
+    store: .preview(
+      reducer: CounterFeature(),
+      initialState: .init(count: 3, step: 2)
     )
-
-    var filteredTodos: [Todo] {
-        switch store.filter {
-        case .all: return store.todos
-        case .active: return store.todos.filter { !$0.isCompleted }
-        case .completed: return store.todos.filter { $0.isCompleted }
-        }
-    }
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if store.isLoading {
-                    ProgressView("Loading...")
-                } else {
-                    List {
-                        ForEach(filteredTodos) { todo in
-                            TodoRowView(todo: todo) {
-                                store.send(.toggleTodo(todo.id))
-                            }
-                        }
-                        .onDelete { indexSet in
-                            for index in indexSet {
-                                store.send(.deleteTodo(filteredTodos[index].id))
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Todos")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Picker("Filter", selection: store.binding(\.filter, send: { .setFilter($0) })) {
-                        Text("All").tag(Filter.all)
-                        Text("Active").tag(Filter.active)
-                        Text("Completed").tag(Filter.completed)
-                    }
-                    .pickerStyle(.menu)
-                }
-            }
-            .alert("Error", isPresented: .constant(store.errorMessage != nil)) {
-                Button("OK") { store.send(.loadTodos) }
-            } message: {
-                if let error = store.errorMessage {
-                    Text(error)
-                }
-            }
-            .task {
-                store.send(.loadTodos)
-            }
-        }
-    }
+  )
 }
 ```
 
----
-
-## EffectTask의 고급 기능
-
-### Debounce와 Throttle
-
-사용자 입력을 처리할 때 유용합니다.
-
-```swift
-case .searchTextChanged(let text):
-    state.searchText = text
-
-    let service = self.searchService
-    return .run { send in
-        let results = try await service.search(text)
-        await send(.searchResultsLoaded(results))
-    }
-    .debounce("search", for: .milliseconds(300))
-    // 사용자가 입력을 멈춘 후 300ms 뒤에 실행
-```
-
-```swift
-case .refreshPulled:
-    return .run { /* 새로고침 로직 */ }
-    .throttle("refresh", for: .seconds(1), leading: false, trailing: true)
-    // 1초 내 추가 요청 무시
-```
-
-### 애니메이션
-
-상태 변경 시 애니메이션을 적용합니다.
-
-```swift
-case .addItem:
-    state.items.append(newItem)
-    return .none
-    .animation(.spring())
-```
-
-### 취소 가능한 작업
-
-장기 실행 작업을 관리합니다.
-
-```swift
-case .startLongTask:
-    return .run { send in
-        // 긴 작업
-    }
-    .cancellable("long-task", cancelInFlight: true)
-
-case .cancelTask:
-    return .cancel("long-task")
-```
+preview 전용 초기화를 production wiring에 섞지 않게 하려는 의도가 여기에도 드러납니다.
 
 ---
 
-## 테스트하기
+## Effect runtime
 
-InnoFlow는 `TestStore`를 통해 결정론적 테스트를 지원합니다.
+`EffectTask<Action>`는 여전히 effect DSL의 중심입니다.
+
+- `.none`
+- `.send(action)`
+- `.run { send, context in ... }`
+- `.merge(...)`
+- `.concatenate(...)`
+- `.cancel(id)`
+- `.cancellable(id:cancelInFlight:)`
+- `.debounce(id:for:)`
+- `.throttle(id:for:leading:trailing:)`
+- `.animation(_:)`
+
+하지만 `3.0`에서 중요한 변화는 DSL 목록보다 runtime contract입니다.
+
+### `EffectContext`
+
+새 코드에서는 `.run { send, context in ... }` 스타일을 우선 쓰는 것이 맞습니다.
 
 ```swift
-import Testing
+return .run { send, context in
+  do {
+    try await context.sleep(for: .milliseconds(300))
+    try await context.checkCancellation()
+    await send(.finished)
+  } catch is CancellationError {
+    return
+  }
+}
+```
+
+이유는 명확합니다.
+
+- `StoreClock`가 debounce/throttle과 effect delay를 함께 제어
+- 테스트에서 wall clock 의존을 줄임
+- cancellation check를 ad-hoc하게 흩뿌리지 않아도 됨
+
+### FIFO queue semantics
+
+`Store`는 reducer input과 effect follow-up action을 단일 FIFO queue로 처리합니다.
+
+| 동작 | 의미 |
+|---|---|
+| `.send` | 즉시 follow-up action처럼 보이지만 reducer-reentrant가 아니라 queue에 들어감 |
+| `.run` | suspension boundary 이후 같은 queue로 다시 진입 |
+| `.concatenate` | 선언 순서 유지 |
+| `.merge` | 자식 completion 순서 기준 |
+
+즉, InnoFlow는 effect ordering을 암묵적 재진입에 맡기지 않고 문서화된 contract로 고정합니다.
+
+### `StoreInstrumentation`
+
+운영 환경 observability도 공식 surface가 생겼습니다.
+
+```swift
+let instrumentation: StoreInstrumentation<Feature.Action> = .combined(
+  .osLog(logger: logger),
+  .sink { event in
+    switch event {
+    case .runStarted:
+      metrics.increment("feature.effect.run_started")
+    case .runFinished:
+      metrics.increment("feature.effect.run_finished")
+    case .actionEmitted:
+      metrics.increment("feature.effect.emitted")
+    case .actionDropped:
+      metrics.increment("feature.effect.dropped")
+    case .effectsCancelled:
+      metrics.increment("feature.effect.cancelled")
+    }
+  }
+)
+```
+
+핵심은 vendor SDK를 core reducer semantics에 섞지 않고 `sink`, `osLog`, `combined` 같은 확장 지점으로 분리했다는 점입니다.
+
+---
+
+## Phase-driven modeling
+
+`3.0`에서 가장 크게 체감되는 새 장은 여기입니다. 다만 오해하면 안 됩니다.
+
+> `PhaseMap`은 runtime phase ownership layer이고, `PhaseTransitionGraph`는 topology validation 도구입니다.
+
+즉, InnoFlow가 generic FSM runtime으로 변한 것은 아닙니다.
+
+### `PhaseMap`
+
+```swift
+@InnoFlow
+struct ItemsFeature {
+  struct State: Equatable, Sendable, DefaultInitializable {
+    enum Phase: Hashable, Sendable {
+      case idle
+      case loading
+      case loaded
+      case failed
+    }
+
+    var phase: Phase = .idle
+    var items: [Item] = []
+    var errorMessage: String?
+  }
+
+  enum Action: Equatable, Sendable {
+    case load
+    case _loaded([Item])
+    case _failed(String)
+  }
+
+  static var phaseMap: PhaseMap<State, Action, State.Phase> {
+    PhaseMap(\.phase) {
+      From(.idle) {
+        On(.load, to: .loading)
+      }
+      From(.loading) {
+        On(Action.loadedCasePath, to: .loaded)
+        On(Action.failedCasePath, to: .failed)
+      }
+      From(.loaded) {
+        On(.load, to: .loading)
+      }
+      From(.failed) {
+        On(.load, to: .loading)
+      }
+    }
+  }
+
+  static var phaseGraph: PhaseTransitionGraph<State.Phase> {
+    phaseMap.derivedGraph
+  }
+
+  var body: some Reducer<State, Action> {
+    let phaseMap: PhaseMap<State, Action, State.Phase> = Self.phaseMap
+
+    return Reduce { state, action in
+      switch action {
+      case .load:
+        return .none
+      case ._loaded(let items):
+        state.items = items
+        return .none
+      case ._failed(let message):
+        state.errorMessage = message
+        return .none
+      }
+    }
+    .phaseMap(phaseMap)
+  }
+}
+```
+
+이 모델에서 중요한 규칙은 다음입니다.
+
+- `PhaseMap`은 base reducer 뒤에서 실행된다
+- `PhaseMap`이 활성화되면 base reducer가 owned phase를 직접 바꾸지 않는 것이 원칙이다
+- unmatched phase/action pair는 기본적으로 legal no-op이다
+- stricter coverage는 runtime이 아니라 test에서 opt-in한다
+
+### 언제 써야 하나
+
+- `idle -> loading -> loaded`처럼 phase enum이 이미 있을 때
+- legal transition이 business contract의 일부일 때
+- `state.phase = ...`가 reducer 여러 branch에 퍼지고 있을 때
+
+### 언제 쓰지 말아야 하나
+
+- route stack 대체
+- session lifecycle
+- reconnect/transport retry
+- dependency/container wiring
+- 단순 effect bookkeeping
+
+### `PhaseTransitionGraph`
+
+`PhaseTransitionGraph`는 graph topology validation에 집중합니다.
+
+```swift
+let report = ItemsFeature.phaseGraph.validationReport(
+  allPhases: [.idle, .loading, .loaded, .failed],
+  root: .idle,
+  terminalPhases: [.loaded]
+)
+
+precondition(report.issues.isEmpty)
+```
+
+payload가 있는 action 기준으로 phase를 나눠야 할 때는 `ActionMatcher`와 case path 기반 `On(...)` 규칙을 우선 쓰는 것이 현재 문서가 권장하는 방향입니다.
+
+여기서 graph는 "정적 계약을 검증"하는 역할입니다. guard-bearing transition metadata까지 이 graph에 욱여넣지 않는 것도 `3.0` 문서가 강조하는 설계 의도입니다.
+
+`validatePhaseTransitions(...)`는 남아 있지만, 새 글에서는 backward compatibility로만 언급하고 canonical path로 추천하지 않습니다.
+
+---
+
+## Testing
+
+`InnoFlowTesting`의 `TestStore`는 여전히 핵심이지만, `3.0`에서는 phase-aware testing이 더 선명해졌습니다.
+
+```swift
 import InnoFlowTesting
 
-@Suite("TodoFeature Tests")
+@Test
 @MainActor
-struct TodoFeatureTests {
+func loadFlow() async {
+  let store = TestStore(reducer: ItemsFeature())
 
-    @Test("할 일 추가")
-    func testAddTodo() async {
-        let store = TestStore(
-            reducer: TodoFeature(todoService: MockTodoService())
-        )
+  let phaseMap: PhaseMap<ItemsFeature.State, ItemsFeature.Action, ItemsFeature.State.Phase> =
+    ItemsFeature.phaseMap
 
-        await store.send(.addTodo("새 할 일")) {
-            $0.todos.count = 1
-            $0.todos.first?.title = "새 할 일"
-        }
+  await store.send(.load, through: phaseMap) {
+    $0.phase = .loading
+  }
 
-        await store.assertNoMoreActions()
-    }
-
-    @Test("할 일 로드 플로우")
-    func testLoadTodosFlow() async {
-        let mockService = MockTodoService()
-        mockService.mockTodos = [
-            Todo(id: UUID(), title: "테스트 할 일")
-        ]
-
-        let store = TestStore(
-            reducer: TodoFeature(todoService: mockService)
-        )
-
-        // 액션 전송 및 상태 변화 검증
-        await store.send(.loadTodos) {
-            $0.isLoading = true
-            $0.errorMessage = nil
-        }
-
-        // Effect에서 발생한 액션 검증
-        await store.receive(._todosLoaded(mockService.mockTodos)) {
-            $0.todos = mockService.mockTodos
-            $0.isLoading = false
-        }
-
-        await store.assertNoMoreActions()
-    }
+  await store.receive(._loaded(items), through: phaseMap) {
+    $0.phase = .loaded
+    $0.items = items
+  }
 }
 ```
 
-### 테스트의 장점
+여기서 포인트는 `through: phaseMap`입니다. phase-heavy feature는 reducer 테스트와 phase ownership 검증을 같은 surface에서 다룹니다.
 
-1. **순수 함수 테스트** - Reducer는 사이드 이펙트 없는 순수 함수
-2. **시간 독립적** - 비동기 작업도 결정론적으로 테스트 가능
-3. **상태 스냅샷** - 각 액션 후의 상태를 명확히 검증
+추가로 기억할 만한 점은 이렇습니다.
 
----
+- parent `TestStore`를 `scope(state:action:)`해서 child 테스트를 이어갈 수 있다
+- `StoreClock.manual(...)`로 debounce/throttle과 effect delay를 제어할 수 있다
+- state mismatch diagnostics가 diff 중심으로 정리되어 있다
 
-## Store Scope - 부모-자식 상태 격리
-
-대규모 앱에서는 기능 단위로 Store를 분리하는 것이 좋습니다. InnoFlow는 `scope`를 통해 부모 Store에서 자식 Store를 생성할 수 있습니다.
-
-```swift
-// 부모 Feature
-@InnoFlow
-struct AppFeature {
-    struct State: Equatable, Sendable {
-        var todo: TodoFeature.State = .init()
-        var profile: ProfileFeature.State = .init()
-    }
-
-    enum Action {
-        case todo(TodoFeature.Action)
-        case profile(ProfileFeature.Action)
-    }
-
-    func reduce(into state: inout State, action: Action) -> EffectTask<Action> {
-        switch action {
-        case .todo(let todoAction):
-            // 자식 Feature에 위임
-            return TodoFeature().reduce(into: &state.todo, action: todoAction)
-                .map { Action.todo($0) }
-
-        case .profile(let profileAction):
-            return ProfileFeature().reduce(into: &state.profile, action: profileAction)
-                .map { Action.profile($0) }
-        }
-    }
-}
-
-// 자식 뷰에서 스코프 사용
-struct TodoSectionView: View {
-    let store: Store<AppFeature>
-
-    var body: some View {
-        TodoFeatureView(
-            store: store.scope(
-                state: \.todo,
-                action: AppFeature.Action.todo
-            )
-        )
-    }
-}
-```
+즉, 테스트도 "effect가 어떻게 돌았는가"보다 "문서화된 transition contract를 지키는가"에 더 가까워졌습니다.
 
 ---
 
-## 다른 프레임워크와 비교
+## 언제 무엇을 쓰면 될까요?
 
-| 기능 | InnoFlow | TCA | ReactorKit | MVVM |
-|------|----------|-----|------------|------|
-| 학습 곡선 | 낮음 | 높음 | 중간 | 낮음 |
-| SwiftUI 통합 | 네이티브 | 네이티브 | Rx 필요 | 수동 |
-| 보일러플레이트 | 적음 | 많음 | 중간 | 적음 |
-| 테스트 용이성 | 높음 | 높음 | 높음 | 중간 |
-| 상태 추적성 | 높음 | 높음 | 높음 | 낮음 |
-| Effect 관리 | DSL | 복잡 | Rx 기반 | 수동 |
+| 상황 | 권장 surface |
+|---|---|
+| 단순 feature logic | `@InnoFlow` + `Reduce` |
+| 부모/자식 조합 | `CombineReducers` + `Scope` |
+| optional child | `IfLet` |
+| enum-backed child | `IfCaseLet` |
+| row collection | `ForEachReducer` |
+| mutable child flow | `ScopedStore` |
+| read-only expensive projection | `SelectedStore` |
+| phase-heavy feature | `PhaseMap` + `phaseMap.derivedGraph` |
+| runtime observability | `StoreInstrumentation` |
+| preview/review 환경 | `Store.preview(...)` |
 
-### InnoFlow가 추구하는 것
-
-- **실용성**: TCA의 강력함을 유지하되, 학습 곡선을 낮춤
-- **SwiftUI 퍼스트**: `@Observable`을 적극 활용해 자연스러운 통합
-- **명확한 런타임 모델**: Effect 생명주기와 취소가 명확함
-
----
-
-## 개발 철학
-
-### v2 설계 원칙
-
-InnoFlow v2는 다음 원칙을 기반으로 재설계되었습니다:
-
-1. **단일 Reducer 계약** - `reduce(into:action:) -> EffectTask<Action>` 하나로 통합
-2. **명시적 비동기 모델** - EffectTask DSL로 run/merge/concatenate/cancel 통합
-3. **취소 완료 계약** - Store 취소 API가 async로, 결정론적 정리 보장
-4. **SwiftUI 퍼스트 런타임** - `@Observable` Store + `@MainActor` 어댑터
-5. **엄격한 바인딩 의도** - `@BindableField` 프로퍼티만 SwiftUI에서 바인딩 가능
-6. **결정론적 테스트** - 타임아웃/취소 지향 TestStore
-
-### 왜 이런 선택을 했나요?
-
-기존 아키텍처에서 겪은 문제들을 해결하기 위해서입니다:
-
-- **암시적 상태 변경**을 방지하고자 모든 변경이 Action을 거치도록 강제
-- **추적 불가능한 비동기**를 피하고자 Effect를 일급 객체로 다룸
-- **테스트 불가능한 로직**을 없애고자 Reducer를 순수 함수로 유지
-- **스파게티 바인딩**을 막고자 `@BindableField`로 명시적 opt-in
+이 표만 봐도 `3.0`의 의도가 드러납니다. InnoFlow는 one big store pattern을 강요하는 프레임워크가 아니라, reducer composition과 state ownership을 작게 나눈 뒤 SwiftUI runtime이 그것을 안정적으로 실행하도록 돕는 프레임워크입니다.
 
 ---
 
-## 설치
-
-### Swift Package Manager
+## 설치와 요구사항
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/InnoSquadCorp/InnoFlow.git", from: "2.0.0")
+  .package(url: "https://github.com/InnoSquadCorp/InnoFlow.git", from: "3.0.0")
 ]
 ```
 
-### 요구사항
+현재 패키지 요구사항은 다음과 같습니다.
 
-- iOS 18.0+ / macOS 15.0+ / tvOS 18.0+ / watchOS 11.0+
-- Swift 6.2+
+- iOS 18+
+- macOS 15+
+- tvOS 18+
+- watchOS 11+
+- visionOS 2+
+- Swift tools 6.2
 
----
-
-## 결론
-
-InnoFlow는 **SwiftUI 시대에 맞는 실용적인 단방향 아키텍처**를 지향합니다.
-
-### 추천 대상
-
-- **상태 관리 복잡도**에 고민인 SwiftUI 개발자
-- **테스트 가능한 아키텍처**를 찾는 팀
-- **TCA는 너무 복잡**하다고 느끼는 분
-- **Elm Architecture**에 관심 있는 Swift 개발자
-
-### InnoFlow의 장점 요약
-
-1. **@InnoFlow 매크로** - 보일러플레이트 없이 Reducer 정의
-2. **@Observable Store** - SwiftUI와 자연스러운 통합
-3. **EffectTask DSL** - 선언적 비동기 작업 관리
-4. **TestStore** - 결정론적 테스트 지원
-5. **@BindableField** - 명시적이고 안전한 바인딩
-6. **낮은 학습 곡선** - 기존 SwiftUI 지식을 그대로 활용
-
-상태 관리가 복잡해지는 순간, InnoFlow를 고려해 보세요. 단방향 데이터 흐름이 주는 예측 가능성과 테스트 용이성을 경험하실 수 있습니다.
+테스트 타깃에서 `TestStore`, `ManualTestClock` 등을 쓰려면 `InnoFlowTesting`도 함께 추가하면 됩니다.
 
 ---
+
+## 마무리
+
+지금의 InnoFlow를 한 문장으로 요약하면 이렇습니다.
+
+> InnoFlow는 SwiftUI 상태관리 라이브러리라기보다, business/domain transition을 reducer composition과 explicit runtime contract로 정리하는 framework입니다.
+
+그래서 `3.0`에서 특히 좋아진 점은 다음과 같습니다.
+
+1. feature authoring이 `body` 기반 reducer composition으로 명확해졌습니다.
+2. child composition surface가 `Scope` 계열로 정리됐습니다.
+3. `SelectedStore`, `Store.preview`, `StoreInstrumentation`처럼 SwiftUI 운영 surface가 선명해졌습니다.
+4. `PhaseMap`과 `PhaseTransitionGraph`가 phase-heavy feature의 계약을 더 잘 드러냅니다.
+5. navigation, session, dependency graph ownership을 프레임워크 바깥에 남겨 경계가 더 깨끗해졌습니다.
+
+상태가 복잡하다고 해서 모든 앱 흐름을 하나의 giant state machine으로 밀어넣고 싶지는 않을 때, InnoFlow 3.0은 꽤 좋은 균형점을 제공합니다.
 
 ## 참고 자료
 
 - [InnoFlow GitHub 저장소](https://github.com/InnoSquadCorp/InnoFlow)
-- [InnoFlow API 문서 (DocC)](https://innosquad-mdd.github.io/InnoFlow/documentation/innoflow/)
-- [Elm Architecture](https://guide.elm-lang.org/architecture/)
-- [TCA (The Composable Architecture)](https://github.com/pointfreeco/swift-composable-architecture)
+- [Architecture Contract](https://github.com/InnoSquadCorp/InnoFlow/blob/main/ARCHITECTURE_CONTRACT.md)
+- [Phase-Driven Modeling](https://github.com/InnoSquadCorp/InnoFlow/blob/main/PHASE_DRIVEN_MODELING.md)
+- [Canonical Sample App](https://github.com/InnoSquadCorp/InnoFlow/tree/main/Examples/InnoFlowSampleApp)
