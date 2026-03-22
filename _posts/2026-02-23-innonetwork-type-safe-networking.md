@@ -10,663 +10,327 @@ toc: true
 comments: true
 ---
 
-## 왜 만들었을까요?
+## 들어가며
 
-iOS에서 네트워킹 코드를 작성할 때마다 비슷한 고민이 반복됩니다.
+초기 버전의 `InnoNetwork`를 설명할 때는 보통 "Swift Concurrency 기반 타입 안전 HTTP 클라이언트"라는 표현을 썼습니다. 지금도 틀린 말은 아니지만, `3.0.1` 기준으로는 그 설명만으로 부족합니다.
 
-**URLSession 코드가 장황합니다.** 요청 하나를 보내려면 URL을 만들고, URLRequest를 설정하고, dataTask를 만들고, response를 체크하고, JSON을 디코딩해야 합니다. 이 과정에서 같은 보일러플레이트를 반복해서 작성하게 됩니다.
+현재 공개 패키지는 아래 세 제품으로 나뉩니다.
 
-**에러 처리가 일관되지 않습니다.** 404인지, 서버 에러인지, 디코딩 실패인지 구분하기 어렵고, 모든 것을 `catch { print(error) }`로 처리하는 코드가 쉽게 누적됩니다.
+- `InnoNetwork`
+- `InnoNetworkDownload`
+- `InnoNetworkWebSocket`
 
-**타입 안전성이 부족합니다.** 요청 파라미터와 응답 타입이 명확하지 않아서 `Any`를 남발하거나 강제 캐스팅을 사용하는 코드가 늘어납니다.
+그리고 실제 public contract는 단순 HTTP wrapper가 아니라, **명시적인 configuration entry point, transport policy, event delivery, durability, reconnect model**까지 포함합니다.
 
-**재시도 로직이 복잡합니다.** 네트워크가 끊겼을 때 재시도는 어떻게 할지, 지수 백오프는 어떻게 적용할지 같은 로직이 비즈니스 코드에 쉽게 섞입니다.
+이 글은 그 기준으로 `InnoNetwork`를 다시 정리합니다.
 
-**InnoNetwork**는 이런 문제를 해결하기 위해 만들었습니다. 핵심 아이디어는 단순합니다.
+## 왜 다시 봐야 하나
 
-> API를 타입으로 정의하고, Swift Concurrency로 깔끔하게 처리해 보겠습니다.
+`3.0.x`에서 가장 중요한 변화는 "더 많은 endpoint 예제"가 아닙니다. 대신 아래 관점이 또렷해졌습니다.
 
----
+- `safeDefaults`가 권장 진입점이라는 점
+- `advanced` builder로 운영 정책을 국소적으로 조정한다는 점
+- 다운로드와 웹소켓이 별도 product로 분리되어 있다는 점
+- protobuf가 별도 패키지 `InnoNetworkProtobuf`로 이동했다는 점
+- bounded buffering, append-log durability, reconnect taxonomy 같은 운영 모델이 문서화되었다는 점
 
-## 핵심 개념
+즉, 지금 `InnoNetwork`는 "HTTP 요청 보내는 법"보다 **어떤 네트워크 lifecycle을 어떤 surface로 다룰 것인지**가 더 중요한 프레임워크입니다.
 
-### 세 가지 원칙
+## 제품군 구조와 ownership boundary
 
-1. **타입 안전**: 모든 API 요청과 응답을 제네릭으로 강타입 처리합니다. 컴파일 타임에 타입 오류를 잡을 수 있습니다.
-2. **프로토콜 기반**: `APIDefinition` 프로토콜로 API를 정의합니다. 기본 구현을 제공하면서도 커스터마이징이 자유롭습니다.
-3. **Swift Concurrency**: async/await, actor, Sendable을 지원합니다. 콜백 지옥에서 벗어날 수 있습니다.
+먼저 제품 경계를 명확히 보는 게 좋습니다.
 
-### 주요 컴포넌트
+### `InnoNetwork`
 
-| 컴포넌트 | 역할 |
-|---------|------|
-| `APIDefinition` | API 요청을 정의하는 프로토콜 |
-| `MultipartAPIDefinition` | 파일 업로드용 프로토콜 |
-| `DefaultNetworkClient` | 네트워크 요청을 실행하는 actor |
-| `NetworkConfiguration` | 타임아웃, 캐시 정책, 재시도 정책 등 설정 |
-| `RequestInterceptor` | 요청 전 처리 (인증 토큰 추가 등) |
-| `ResponseInterceptor` | 응답 후 처리 |
-| `RetryPolicy` | 재시도 로직 정의 |
+기본 request/response API를 담당합니다.
 
----
+- `APIDefinition`
+- `MultipartAPIDefinition`
+- `DefaultNetworkClient`
+- `NetworkConfiguration`
+- `TrustPolicy`
+- `RetryPolicy`
 
-## 기본 사용법
+### `InnoNetworkDownload`
 
-### API 설정
+다운로드 lifecycle을 담당합니다.
 
-먼저 API의 기본 설정을 정의한다.
+- `DownloadConfiguration`
+- `DownloadManager`
+- progress / completion / failure event stream
+- foreground / background orchestration
+
+### `InnoNetworkWebSocket`
+
+연결 지향 realtime flow를 담당합니다.
+
+- `WebSocketConfiguration`
+- `WebSocketManager`
+- reconnect policy
+- heartbeat / pong timeout
+- event stream
+
+이 구조 덕분에 `InnoNetwork`는 "모든 네트워크 문제를 하나의 클라이언트에 우겨 넣는 패키지"가 아니라, transport 성격에 따라 surface를 분리한 프레임워크 제품군이 됩니다.
+
+## 설치
+
+기본 설치는 `3.0.1` 기준으로 아래처럼 시작합니다.
 
 ```swift
+dependencies: [
+    .package(url: "https://github.com/InnoSquadCorp/InnoNetwork.git", from: "3.0.1")
+]
+```
+
+## Core Request Model
+
+기본 요청 모델은 여전히 `APIDefinition`입니다.
+
+```swift
+import Foundation
 import InnoNetwork
 
-struct MyAPI: APIConfigure {
-    var host: String { "https://api.example.com" }
-    var basePath: String { "v1" }
-}
-```
-
-`APIConfigure` 프로토콜을 따르면 된다. `baseURL`은 자동으로 계산된다.
-
-### API 정의
-
-각 API 엔드포인트를 타입으로 정의한다.
-
-```swift
-struct GetUsers: APIDefinition {
-    typealias Parameter = EmptyParameter  // 요청 파라미터 없음
-    typealias APIResponse = [User]       // 응답 타입
-
-    var method: HTTPMethod { .get }
-    var path: String { "/users" }
-}
-
-struct CreateUser: APIDefinition {
-    struct UserParameter: Encodable, Sendable {
-        let name: String
-        let email: String
-    }
-
-    typealias Parameter = UserParameter
-    typealias APIResponse = User
-
-    var parameters: UserParameter?
-    var method: HTTPMethod { .post }
-    var path: String { "/users" }
-
-    init(name: String, email: String) {
-        self.parameters = UserParameter(name: name, email: email)
-    }
-}
-```
-
-`APIDefinition` 프로토콜만 따르면 된다. 나머지는 기본 구현이 제공된다.
-
-### 요청 실행
-
-```swift
-let client = try DefaultNetworkClient(configuration: MyAPI())
-
-// GET 요청
-let users = try await client.request(GetUsers())
-
-// POST 요청
-let newUser = try await client.request(CreateUser(name: "홍길동", email: "hong@example.com"))
-```
-
-단 세 줄이다. URLSession을 직접 쓰면 최소 20줄은 될 코드다.
-
----
-
-## HTTP 메서드
-
-모든 표준 HTTP 메서드를 지원한다.
-
-```swift
-struct GetPost: APIDefinition {
-    typealias Parameter = EmptyParameter
-    typealias APIResponse = Post
-
-    let postId: Int
-    var method: HTTPMethod { .get }
-    var path: String { "/posts/\(postId)" }
-}
-
-struct UpdatePost: APIDefinition {
-    struct PostParameter: Encodable, Sendable {
-        let title: String
-        let body: String
-    }
-
-    typealias Parameter = PostParameter
-    typealias APIResponse = Post
-
-    var parameters: PostParameter?
-    var method: HTTPMethod { .put }
-    var path: String { "/posts/1" }
-}
-
-struct PatchPost: APIDefinition {
-    struct PatchParameter: Encodable, Sendable {
-        let title: String?
-    }
-
-    typealias Parameter = PatchParameter
-    typealias APIResponse = Post
-
-    var parameters: PatchParameter?
-    var method: HTTPMethod { .patch }
-    var path: String { "/posts/1" }
-}
-
-struct DeletePost: APIDefinition {
-    typealias Parameter = EmptyParameter
-    typealias APIResponse = EmptyResponse  // 응답 본문 없음
-
-    let postId: Int
-    var method: HTTPMethod { .delete }
-    var path: String { "/posts/\(postId)" }
-}
-```
-
----
-
-## 커스텀 헤더
-
-인증, 컨텐츠 타입 등 헤더 커스터마이징을 쉽게 적용할 수 있습니다.
-
-```swift
-struct GetPrivateData: APIDefinition {
-    typealias Parameter = EmptyParameter
-    typealias APIResponse = PrivateData
-
-    var method: HTTPMethod { .get }
-    var path: String { "/private" }
-
-    var headers: HTTPHeaders {
-        var headers = HTTPHeaders.default
-        headers.add(.authorization(bearerToken: "my-jwt-token"))
-        headers.add(.accept("application/json"))
-        headers.add(name: "X-API-Version", value: "2")
-        return headers
-    }
-}
-```
-
-### 기본 헤더
-
-```swift
-HTTPHeaders.default  // Content-Type, Accept 등 기본 헤더
-```
-
-### 사용 가능한 헤더 타입
-
-```swift
-.authorization(username: "user", password: "pass")  // Basic Auth
-.authorization(bearerToken: "token")                // Bearer Token
-.contentType("application/json")
-.accept("application/json")
-.acceptLanguage("ko-KR")
-.userAgent("MyApp/1.0")
-HTTPHeader(name: "X-Custom-Header", value: "value")
-```
-
----
-
-## 컨텐츠 타입
-
-JSON 외에도 다양한 컨텐츠 타입을 지원한다.
-
-### JSON (기본)
-
-```swift
-struct CreatePost: APIDefinition {
-    var contentType: ContentType { .json }  // 기본값
-    // ...
-}
-```
-
-### Form URL-Encoded
-
-```swift
-struct LoginRequest: APIDefinition {
-    struct LoginParameter: Encodable, Sendable {
-        let email: String
-        let password: String
-    }
-
-    typealias Parameter = LoginParameter
-    typealias APIResponse = AuthResponse
-
-    var parameters: LoginParameter?
-    var method: HTTPMethod { .post }
-    var path: String { "/login" }
-    var contentType: ContentType { .formUrlEncoded }  // x-www-form-urlencoded
-
-    init(email: String, password: String) {
-        self.parameters = LoginParameter(email: email, password: password)
-    }
-}
-```
-
----
-
-## 파일 업로드 (Multipart)
-
-파일 업로드는 `MultipartAPIDefinition`을 사용합니다.
-
-```swift
-struct UploadImage: MultipartAPIDefinition {
-    typealias APIResponse = UploadResponse
-
-    let imageData: Data
-    let title: String
-
-    var multipartFormData: MultipartFormData {
-        var formData = MultipartFormData()
-        formData.append(title, name: "title")
-        formData.append(
-            imageData,
-            name: "file",
-            fileName: "image.jpg",
-            mimeType: "image/jpeg"
-        )
-        return formData
-    }
-
-    var method: HTTPMethod { .post }
-    var path: String { "/upload" }
-}
-
-// 사용
-let response = try await client.upload(UploadImage(imageData: data, title: "프로필 사진"))
-```
-
-`upload` 메서드를 사용하면 됩니다.
-
----
-
-## 에러 처리
-
-`NetworkError` 열거형으로 모든 네트워크 에러를 체계적으로 처리한다.
-
-```swift
-do {
-    let user = try await client.request(GetUser(id: 1))
-    print("사용자: \(user.name)")
-} catch let error as NetworkError {
-    switch error {
-    case .statusCode(let response):
-        // HTTP 상태 코드 에러 (404, 500 등)
-        print("HTTP 에러: \(response.statusCode)")
-        if response.statusCode == 401 {
-            // 인증 만료 처리
-        }
-    case .objectMapping(let decodingError, let response):
-        // JSON 디코딩 실패
-        print("디코딩 실패: \(decodingError.message)")
-    case .invalidBaseURL(let url):
-        print("잘못된 URL: \(url)")
-    case .underlying(let underlyingError, _):
-        // 네트워크 연결 실패 등
-        print("기타 에러: \(underlyingError.message)")
-    case .cancelled:
-        // 요청 취소
-        print("요청이 취소됨")
-    default:
-        print("알 수 없는 에러: \(error)")
-    }
-}
-```
-
-### NetworkError 종류
-
-| 케이스 | 의미 |
-|-------|------|
-| `invalidBaseURL` | 잘못된 베이스 URL |
-| `invalidRequestConfiguration` | 잘못된 요청 설정 |
-| `statusCode` | HTTP 상태 코드 에러 (200-299 외) |
-| `objectMapping` | JSON 디코딩 실패 |
-| `jsonMapping` | JSON 파싱 실패 |
-| `underlying` | 기타 에러 |
-| `trustEvaluationFailed` | SSL 인증서 검증 실패 |
-| `cancelled` | 요청 취소 |
-
----
-
-## 재시도 정책
-
-네트워크 실패 시 자동 재시도를 지원한다.
-
-```swift
-let retryPolicy = ExponentialBackoffRetryPolicy(
-    maxRetries: 3,              // 최대 재시도 횟수
-    retryDelay: 1.0,            // 기본 대기 시간 (초)
-    maxDelay: 30.0,             // 최대 대기 시간
-    jitterRatio: 0.2,           // 지터 (±20%)
-    waitsForNetworkChanges: true, // 네트워크 변경 대기
-    networkChangeTimeout: 10.0   // 네트워크 변경 대기 최대 시간
-)
-
-let config = NetworkConfiguration(
-    baseURL: URL(string: "https://api.example.com/v1")!,
-    retryPolicy: retryPolicy
-)
-
-let client = try DefaultNetworkClient(
-    configuration: MyAPI(),
-    networkConfiguration: config
-)
-```
-
-### 지수 백오프
-
-`ExponentialBackoffRetryPolicy`는 지수 백오프를 자동으로 적용한다.
-
-- 1차 재시도: ~1초 대기
-- 2차 재시도: ~2초 대기
-- 3차 재시도: ~4초 대기
-
-지터(jitter)를 추가해서 서버 부하를 분산시킨다.
-
-### 재시도 조건
-
-기본적으로 다음 경우에 재시도한다:
-
-- 408 Request Timeout
-- 429 Too Many Requests
-- 5xx 서버 에러
-- 네트워크 연결 실패
-
----
-
-## 인터셉터
-
-요청/응답을 가로채서 처리할 수 있다.
-
-### RequestInterceptor
-
-요청 보내기 전에 헤더를 추가하거나 수정한다.
-
-```swift
-struct AuthInterceptor: RequestInterceptor {
-    let tokenProvider: () -> String?
-
-    func adapt(_ urlRequest: URLRequest) async throws -> URLRequest {
-        var request = urlRequest
-        if let token = tokenProvider() {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        return request
-    }
-}
-
-struct RefreshTokenAPI: APIDefinition {
-    // ...
-    var requestInterceptors: [RequestInterceptor] {
-        [AuthInterceptor(tokenProvider: { TokenStorage.shared.accessToken })]
-    }
-}
-```
-
-### ResponseInterceptor
-
-응답 받은 후 데이터를 가공한다.
-
-```swift
-struct ErrorResponseInterceptor: ResponseInterceptor {
-    func adapt(_ urlResponse: Response, request: URLRequest) async throws -> Response {
-        // 에러 응답에서 메시지 추출 등
-        if urlResponse.statusCode >= 400 {
-            // 에러 로깅
-        }
-        return urlResponse
-    }
-}
-```
-
----
-
-## 네트워크 모니터링
-
-네트워크 상태 변화를 감지할 수 있다.
-
-```swift
-let monitor = NetworkMonitor.shared
-
-// 현재 상태 확인
-let snapshot = await monitor.currentSnapshot()
-print("연결됨: \(snapshot.status == .satisfied)")
-print("인터페이스: \(snapshot.interfaceTypes)")
-
-// 네트워크 변경 대기
-let newSnapshot = await monitor.waitForChange(from: snapshot, timeout: 30.0)
-```
-
-### NetworkSnapshot
-
-```swift
-struct NetworkSnapshot: Sendable {
-    let status: NetworkReachabilityStatus      // .satisfied, .unsatisfied, .requiresConnection
-    let interfaceTypes: Set<NetworkInterfaceType>  // .wifi, .cellular, .wiredEthernet 등
-}
-```
-
----
-
-## 이벤트 옵저버
-
-네트워크 이벤트를 관찰할 수 있다.
-
-```swift
-struct LoggingObserver: NetworkEventObserving {
-    func handle(_ event: NetworkEvent) {
-        switch event {
-        case .requestStart(let requestID, let method, let url, let retryIndex):
-            print("[\(requestID)] \(method) \(url)")
-        case .responseReceived(let requestID, let statusCode, let byteCount):
-            print("[\(requestID)] 응답: \(statusCode), \(byteCount) bytes")
-        case .requestFinished(let requestID, let statusCode, let byteCount):
-            print("[\(requestID)] 완료: \(statusCode)")
-        case .requestFailed(let requestID, let errorCode, let message):
-            print("[\(requestID)] 실패: \(message)")
-        case .retryScheduled(let requestID, let retryIndex, let delay, let reason):
-            print("[\(requestID)] \(retryIndex + 1)차 재시도 예정 (\(delay)초 후)")
-        default:
-            break
-        }
-    }
-}
-
-let config = NetworkConfiguration(
-    baseURL: URL(string: "https://api.example.com")!,
-    eventObservers: [LoggingObserver()]
-)
-```
-
-### NetworkEvent 종류
-
-| 이벤트 | 시점 |
-|-------|------|
-| `requestStart` | 요청 시작 |
-| `requestAdapted` | 인터셉터 적용 후 |
-| `responseReceived` | 응답 수신 |
-| `requestFinished` | 요청 완료 |
-| `requestFailed` | 요청 실패 |
-| `retryScheduled` | 재시도 예약 |
-
----
-
-## Protobuf 지원
-
-Protocol Buffers도 지원한다.
-
-```swift
-import SwiftProtobuf
-
-struct GetProtobufData: ProtobufAPIDefinition {
-    typealias Parameter = MyRequestProto  // Protobuf 메시지
-    typealias APIResponse = MyResponseProto
-
-    var parameters: MyRequestProto?
-    var method: HTTPMethod { .post }
-    var path: String { "/data" }
-}
-
-let response = try await client.protobufRequest(GetProtobufData(...))
-```
-
----
-
-## 실제 아키텍처 예시
-
-### Repository 레이어와 함께
-
-```swift
-// Domain
 struct User: Decodable, Sendable {
     let id: Int
     let name: String
-    let email: String
 }
 
-protocol UserRepository {
-    func fetchUsers() async throws -> [User]
-    func createUser(name: String, email: String) async throws -> User
-}
+struct GetUser: APIDefinition {
+    typealias Parameter = EmptyParameter
+    typealias APIResponse = User
 
-// Data
-final class UserRepositoryImpl: UserRepository {
-    private let client: DefaultNetworkClient
-
-    init(client: DefaultNetworkClient) {
-        self.client = client
-    }
-
-    func fetchUsers() async throws -> [User] {
-        try await client.request(GetUsers())
-    }
-
-    func createUser(name: String, email: String) async throws -> User {
-        try await client.request(CreateUser(name: name, email: email))
-    }
-}
-
-// App
-@main
-struct MyApp: App {
-    let client: DefaultNetworkClient
-    let userRepository: UserRepository
-
-    init() {
-        do {
-            self.client = try DefaultNetworkClient(configuration: MyAPI())
-        } catch {
-            fatalError("Failed to create DefaultNetworkClient: \(error)")
-        }
-        self.userRepository = UserRepositoryImpl(client: client)
-    }
-
-    var body: some Scene {
-        WindowGroup {
-            UserListView(repository: userRepository)
-        }
-    }
+    var method: HTTPMethod { .get }
+    var path: String { "/users/1" }
 }
 ```
 
-API 정의와 비즈니스 로직이 깔끔하게 분리된다.
-
----
-
-## 다운로드 (InnoNetworkDownload)
-
-대용량 파일 다운로드는 별도 모듈을 사용한다.
+실행은 `DefaultNetworkClient`가 맡습니다.
 
 ```swift
+let client = DefaultNetworkClient(
+    configuration: .safeDefaults(
+        baseURL: URL(string: "https://api.example.com/v1")!
+    )
+)
+
+let user = try await client.request(GetUser())
+print(user.name)
+```
+
+여기서 중요한 건 예전처럼 별도 `APIConfigure` 타입을 기본 설정 entry point로 두지 않는다는 점입니다. `3.0.x`에서는 **configuration object를 명시적으로 생성하는 방식**이 문서와 예제의 중심입니다.
+
+## `safeDefaults`와 `advanced`
+
+지금 문서에서 가장 강조하는 메시지는 간단합니다.
+
+> 특별한 운영 요구가 없다면 `safeDefaults`에 머문다.
+
+### 권장 시작점
+
+```swift
+let client = DefaultNetworkClient(
+    configuration: NetworkConfiguration.safeDefaults(
+        baseURL: URL(string: "https://api.example.com")!
+    )
+)
+```
+
+### 운영 정책이 필요할 때만 `advanced`
+
+```swift
+let configuration = NetworkConfiguration.advanced(
+    baseURL: URL(string: "https://api.example.com")!
+) { builder in
+    builder.timeout = 30
+    builder.retryPolicy = ExponentialBackoffRetryPolicy()
+    builder.trustPolicy = .systemDefault
+}
+
+let client = DefaultNetworkClient(configuration: configuration)
+```
+
+이 구분이 중요한 이유는, `advanced`는 public API이긴 하지만 숫자나 세부 튜닝 값 자체를 contract로 고정하는 surface는 아니기 때문입니다. 프레임워크가 권장하는 경로는 여전히 `safeDefaults`입니다.
+
+## Transport / Operational Surface
+
+`InnoNetwork`를 `3.x` 기준으로 설명할 때는 request/response shape만이 아니라 운영 surface를 같이 봐야 합니다.
+
+### `RetryPolicy`
+
+재시도는 business code에 흩어지는 로직이 아니라 policy로 분리됩니다.
+
+- `RetryPolicy`
+- `ExponentialBackoffRetryPolicy`
+
+### `TrustPolicy`
+
+신뢰 평가도 명시적인 surface로 노출됩니다.
+
+- `.systemDefault`
+- public key pinning
+
+### `EventDeliveryPolicy`
+
+이 부분이 특히 `3.x`다운 변화입니다. 이벤트 전달은 무한 버퍼에 기대지 않고, **bounded buffering과 overflow policy**를 가진 별도 정책으로 다뤄집니다.
+
+즉, 운영 중에 event stream이 과도하게 밀릴 때 어떤 식으로 처리할지를 public surface에서 조절할 수 있습니다.
+
+### `URLQueryEncoder`와 `AnyResponseDecoder`
+
+문서의 톤을 보면 query/form encoding과 decoding도 점점 더 명시적으로 다뤄집니다.
+
+- `URLQueryEncoder`는 deterministic ordering을 가진 query / form 인코딩 경로를 담당합니다.
+- `AnyResponseDecoder`는 explicit decoding strategy를 구성하는 public surface 중 하나입니다.
+
+둘 다 "일상적으로 직접 만지는 타입"은 아닐 수 있지만, `3.x` public contract를 설명할 때는 존재를 짚고 넘어가는 편이 맞습니다.
+
+## Interceptor와 request/response policy
+
+기존 글에서는 `RequestInterceptor`, `ResponseInterceptor`, `RetryPolicy`를 프레임워크의 핵심 전부처럼 설명했습니다. `3.x`에서는 톤을 조금 바꾸는 편이 맞습니다.
+
+이 타입들은 여전히 중요합니다.
+
+- `RequestInterceptor`
+- `ResponseInterceptor`
+- `RetryPolicy`
+
+하지만 프레임워크의 진짜 중심은 "인터셉터를 몇 개 붙일 수 있다"가 아니라, **request execution이 명시적인 정책 경계 안에서 실행된다**는 데 있습니다.
+
+README와 changelog를 보면 request/response execution은 internal transport policy와 explicit decoding strategy 쪽으로 재정리되어 있습니다. 이 레이어는 구현의 핵심이지만, 블로그에서는 **public contract가 아닌 운영 모델 설명** 정도로만 다루는 편이 정확합니다.
+
+## Download Lifecycle
+
+다운로드는 `InnoNetworkDownload` product가 담당합니다.
+
+```swift
+import Foundation
 import InnoNetworkDownload
 
 let manager = DownloadManager.shared
-
-// 다운로드 시작
 let task = await manager.download(
-    url: URL(string: "https://example.com/large-file.zip")!,
-    toDirectory: documentsDirectory
+    url: URL(string: "https://example.com/file.zip")!,
+    toDirectory: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 )
 
-// 진행률 모니터링 (AsyncSequence)
-for await event in manager.events(for: task) {
-    switch event {
-    case .progress(let progress):
-        print("진행률: \(progress.percentCompleted)%")
-        print("받은 바이트: \(progress.bytesReceived)")
-    case .completed(let url):
-        print("완료: \(url)")
-    case .failed(let error):
-        print("실패: \(error)")
-    case .paused:
-        print("일시정지")
-    case .resumed:
-        print("재개")
-    }
+for await event in await manager.events(for: task) {
+    print(event)
 }
-
-// 일시정지/재개
-await manager.pause(task)
-await manager.resume(task)
 ```
 
-백그라운드 다운로드와 재개 가능한 다운로드를 지원한다.
+이 모듈의 핵심은 단순 파일 다운로드가 아닙니다.
 
----
+- foreground / background orchestration
+- pause / resume / retry
+- listener retention
+- append-log persistence 기반 durability
 
-## InnoNetwork가 해결하는 문제들
+즉, 다운로드를 "URLSession downloadTask 래퍼"가 아니라 **지속성과 이벤트 전달이 있는 lifecycle manager**로 보는 편이 맞습니다.
 
-| 문제 | 해결 방법 |
-|------|----------|
-| URLSession 장황한 코드 | `APIDefinition` 프로토콜로 간결화 |
-| 타입 안전성 부족 | 제네릭으로 요청/응답 강타입 |
-| 에러 처리 불명확 | `NetworkError` 열거형으로 체계화 |
-| 재시도 로직 복잡 | `RetryPolicy` 프로토콜로 추상화 |
-| 콜백 지옥 | async/await 기반 |
-| 인터셉터 구현 번거로움 | `RequestInterceptor`, `ResponseInterceptor` 프로토콜 |
-| 네트워크 상태 추적 어려움 | `NetworkMonitor`, 이벤트 옵저버 |
+필요하면 configuration도 명시적으로 생성할 수 있습니다.
 
----
+```swift
+let configuration = DownloadConfiguration.advanced { builder in
+    builder.maxConnectionsPerHost = 3
+    builder.maxRetryCount = 2
+}
+```
 
-## 요구사항
+새 코드에서는 `safeDefaults()`가 기본, `advanced`가 조정 경로라는 패턴이 여기서도 반복됩니다.
 
-- iOS 26+ / macOS 14+ / tvOS 26+ / watchOS 26+ / visionOS 26+
-- Swift 6.2+
+## WebSocket Lifecycle
 
-Swift 6의 strict concurrency를 지원합니다. `DefaultNetworkClient`는 `actor`로 구현되어 있고, 주요 타입이 `Sendable`을 준수합니다.
+웹소켓은 `InnoNetworkWebSocket`이 맡습니다.
 
----
+```swift
+import Foundation
+import InnoNetworkWebSocket
 
-## 결론
+let task = await WebSocketManager.shared.connect(
+    url: URL(string: "wss://echo.example.com/socket")!
+)
 
-InnoNetwork는 **타입 안전하고 Swift Concurrency 네이티브한 네트워킹 프레임워크**입니다.
+for await event in await WebSocketManager.shared.events(for: task) {
+    print(event)
+}
+```
 
-### 추천하는 경우
+이 product의 핵심은 단순 connect/send/receive API보다 아래 운영 모델입니다.
 
-- API 요청 코드를 깔끔하게 정리하고 싶을 때
-- 타입 안전성을 보장받고 싶을 때
-- 재시도, 인터셉터 등을 구조적으로 처리하고 싶을 때
-- Swift 6 strict concurrency 환경에서 작업할 때
+- reconnect policy
+- handshake-aware close taxonomy
+- reconnect suppression rules
+- heartbeat / pong timeout
+- event delivery policy
 
-### 장점 요약
+그래서 `WebSocketManager`를 설명할 때는 "실시간 통신을 지원한다"보다 **연결 실패와 재연결을 어떤 규칙으로 관리하는지**가 더 중요합니다.
 
-1. **타입 안전** - 제네릭으로 요청/응답 강타입
-2. **간결한 API** - 프로토콜 기반 정의, 기본 구현 제공
-3. **Swift Concurrency** - async/await, actor 완벽 지원
-4. **재시도 정책** - 지수 백오프, 네트워크 변경 감지
-5. **인터셉터** - 요청/응답 가로채기
-6. **이벤트 관찰** - 로깅, 분석, 모니터링
-7. **Swift 6 준비됨** - Sendable, actor 완벽 지원
+## Error Handling
 
----
+`InnoNetwork`는 opaque error보다 명시적인 transport error를 선호합니다.
 
-## 참고 자료
+```swift
+do {
+    let user = try await client.request(GetUser())
+    print(user)
+} catch let error as NetworkError {
+    switch error {
+    case .invalidBaseURL(let url):
+        print("Invalid base URL: \(url)")
+    case .invalidRequestConfiguration(let message):
+        print("Invalid request configuration: \(message)")
+    case .statusCode(let response):
+        print("Unexpected status code: \(response.statusCode)")
+    case .objectMapping(let underlying, _):
+        print("Decoding failed: \(underlying)")
+    case .trustEvaluationFailed(let reason):
+        print("Trust evaluation failed: \(reason)")
+    case .cancelled:
+        print("Request cancelled")
+    default:
+        print(error)
+    }
+}
+```
 
-- [InnoNetwork GitHub 저장소](https://github.com/InnoSquadCorp/InnoNetwork)
-- [Swift Concurrency](https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html)
-- [URLSession](https://developer.apple.com/documentation/foundation/urlsession)
+특히 `invalidRequestConfiguration`은 단순 "뭔가 실패했다"가 아니라, request shape와 policy가 맞지 않는다는 신호에 가깝습니다. 예를 들어 query 인코딩 규칙이나 multipart payload shape가 잘못됐을 때 이런 에러가 나올 수 있습니다.
+
+## Protocol Buffers는 이제 별도 패키지
+
+이전 글에서는 protobuf 지원을 본 패키지의 확장 기능처럼 다뤘지만, `3.0.1` 기준으로는 **`InnoNetworkProtobuf`가 별도 패키지**입니다.
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/InnoSquadCorp/InnoNetwork.git", from: "3.0.1"),
+    .package(url: "https://github.com/InnoSquadCorp/InnoNetworkProtobuf.git", branch: "main")
+]
+```
+
+즉, protobuf가 필요한 앱은 `InnoNetwork`만 추가하면 끝이 아닙니다. 이 분리는 "기능이 사라졌다"기보다, core transport 패키지와 protobuf adapter layer를 더 명확히 분리한 것으로 보는 편이 맞습니다.
+
+## 언제 무엇을 써야 하나
+
+| 상황 | 권장 선택 |
+|------|-----------|
+| 일반적인 REST/HTTP API 요청 | `InnoNetwork` + `NetworkConfiguration.safeDefaults(baseURL:)` |
+| retry / trust / metrics 같은 운영 정책 조정 필요 | `NetworkConfiguration.advanced(baseURL:_:)` |
+| 파일 다운로드, 앱 생명주기와 연결된 progress 추적 | `InnoNetworkDownload` + `DownloadManager` |
+| reconnect와 heartbeat가 중요한 실시간 연결 | `InnoNetworkWebSocket` + `WebSocketManager` |
+| protobuf request/response 모델 필요 | `InnoNetwork` + `InnoNetworkProtobuf` |
+
+## 마무리
+
+`InnoNetwork 3.0.1`을 한 문장으로 정리하면, "타입 안전 HTTP 클라이언트"보다는 **운영 정책이 명시된 네트워크 프레임워크 제품군**이 더 정확한 설명입니다.
+
+`APIDefinition`과 `DefaultNetworkClient`는 여전히 출발점입니다. 하지만 실제로 `3.x`를 잘 쓰려면 다음 네 가지를 같이 이해해야 합니다.
+
+- `safeDefaults`가 기본 경로라는 점
+- `advanced`는 운영 정책이 필요할 때만 쓴다는 점
+- download / websocket lifecycle이 별도 product라는 점
+- protobuf가 별도 패키지로 분리되었다는 점
+
+더 자세히 보려면 아래 문서부터 읽는 걸 추천합니다.
+
+1. [README](https://github.com/InnoSquadCorp/InnoNetwork)
+2. [`API_STABILITY.md`](https://github.com/InnoSquadCorp/InnoNetwork/blob/main/API_STABILITY.md)
+3. [`Examples/README.md`](https://github.com/InnoSquadCorp/InnoNetwork/blob/main/Examples/README.md)
+4. [`docs/releases/3.0.1.md`](https://github.com/InnoSquadCorp/InnoNetwork/blob/main/docs/releases/3.0.1.md)
