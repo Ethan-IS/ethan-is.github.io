@@ -1,9 +1,9 @@
 ---
-title: "How InnoSample uses InnoDI, InnoFlow, InnoRouter, and InnoNetwork in a real app architecture"
+title: "How InnoSample Combines InnoDI, InnoFlow, InnoRouter, and InnoNetwork"
 date: 2026-04-03 00:00:00 +0900
 translation_key: innosample-inno-libraries-in-practice
 lang: en
-description: "A practical guide to how InnoSample wires InnoDI, InnoFlow, InnoRouter, and InnoNetwork together inside a modular Swift iOS app architecture."
+description: "How InnoSample places InnoDI, InnoFlow, InnoRouter, and InnoNetwork at the right architecture boundaries, and why the combination creates a stronger app baseline."
 categories: [iOS, Swift, Architecture]
 tags: [swift, iOS, architecture, modularization, dependency-injection, navigation, networking, tuist, clean-architecture, swiftui]
 author: ethan
@@ -11,376 +11,233 @@ toc: true
 comments: true
 ---
 
-## Why this post exists
+## The core idea
 
-There are already separate posts for [`InnoDI`](https://github.com/InnoSquadCorp/InnoDI), [`InnoFlow`](https://github.com/InnoSquadCorp/InnoFlow), [`InnoRouter`](https://github.com/InnoSquadCorp/InnoRouter), and [`InnoNetwork`](https://github.com/InnoSquadCorp/InnoNetwork). But in a real Swift iOS app architecture, the harder problem is not learning each library in isolation. The harder problem is deciding **which boundary each library should own**.
+[`InnoDI`](https://github.com/InnoSquadCorp/InnoDI), [`InnoFlow`](https://github.com/InnoSquadCorp/InnoFlow), [`InnoRouter`](https://github.com/InnoSquadCorp/InnoRouter), and [`InnoNetwork`](https://github.com/InnoSquadCorp/InnoNetwork) are useful on their own. In a real iOS app, though, the more important question is not only how to call each API.
 
-That is what [`InnoSample`](https://github.com/InnoSquadCorp/InnoSample) is good at showing.
+**Which boundary should each library own so they do not step on each other?**
 
-`InnoSample` is not mainly a feature showcase. It is a baseline scaffold that fixes the parts that tend to drift early in a project:
+[`InnoSample`](https://github.com/InnoSquadCorp/InnoSample) exists to answer that question. It is not a feature-heavy sample app. It is a baseline scaffold for the boundaries real apps need early: composition, state, navigation, and networking.
 
-- module boundaries
-- DI wiring
-- navigation ownership
-- network boundaries
+The individual best-practice posts go deeper on each library:
 
-This post uses the actual `InnoSample` codebase to answer four practical questions.
+- [InnoDI Best Practices: Using Swift Macro DI to Preserve App Structure]({% post_url 2026-02-23-innodi-swift-macro-di-en %})
+- [InnoFlow Best Practices: Managing SwiftUI Feature Logic with One-Way State]({% post_url 2026-02-23-innoflow-unidirectional-architecture-en %})
+- [InnoRouter Best Practices: Managing SwiftUI Navigation with Routes and Coordinators]({% post_url 2026-02-23-innorouter-swiftui-navigation-en %})
+- [InnoNetwork Best Practices: Designing Swift Concurrency Networking Boundaries]({% post_url 2026-02-23-innonetwork-type-safe-networking-en %})
+- [Understanding Modularity]({% post_url 2024-04-27-understanding-modularity-en %})
+- [Clean Architecture]({% post_url 2024-05-13-clean-architecture-en %})
 
-- Where should `InnoDI` live?
-- Which layer should own `InnoFlow` reducers?
-- How should `InnoRouter` handle cross-feature navigation?
-- How far should `InnoNetwork` be exposed in app code?
+This post focuses on what happens when the four libraries are placed together.
 
-The detailed public surface of each library is already covered in separate posts. This article is the integration guide: how the four libraries work **together** inside one modular app.
+## The versions used by InnoSample
 
-- `InnoDI`: [InnoDI: A Type-Safe Dependency Injection Library Built with Swift Macros]({% post_url 2026-02-23-innodi-swift-macro-di-en %})
-- `InnoFlow`: [InnoFlow: A unidirectional architecture framework for SwiftUI]({% post_url 2026-02-23-innoflow-unidirectional-architecture-en %})
-- `InnoRouter`: [InnoRouter: A type-safe navigation framework for SwiftUI]({% post_url 2026-02-23-innorouter-swiftui-navigation-en %})
-- `InnoNetwork`: [InnoNetwork: A type-safe networking framework for Swift Concurrency]({% post_url 2026-02-23-innonetwork-type-safe-networking-en %})
-- Modularity background: [Understanding Modularity]({% post_url 2024-04-27-understanding-modularity-en %})
-- Layering background: [Clean Architecture]({% post_url 2024-05-13-clean-architecture-en %})
-
-## Start with the dependency direction
-
-`InnoSample` is organized around this dependency flow.
-
-- `Feature -> Domain`
-- `Data -> Domain`
-- `Remote -> Data + CoreNetwork`
-- `Layers -> Domain + Data + Remote`
-- `Features -> Domain + Feature`
-- `App -> CoreNetwork + Layers + Features + ThirdParty`
-
-Two things matter here.
-
-First, `CoreNetwork`, `Layers`, and `Features` are not just implementation modules. They are mostly **composition and boundary modules**.
-
-Second, runtime movement between features is allowed, but compile-time dependency cycles are not. A flow like `PeopleFeature -> SettingsFeature` may happen at runtime, but `PeopleFeature` does not directly import `SettingsFeature`.
-
-That separation between runtime flow and compile-time dependency is one of the most useful things the sample teaches.
-
-## The package versions used by the sample
-
-[`InnoSample`](https://github.com/InnoSquadCorp/InnoSample)'s `Tuist/Package.swift` pins these versions:
+`Tuist/Package.swift` pins the Inno packages as remote dependencies.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/InnoSquadCorp/InnoDI.git", exact: "3.0.1"),
-    .package(url: "https://github.com/InnoSquadCorp/InnoFlow", exact: "3.0.2"),
-    .package(url: "https://github.com/InnoSquadCorp/InnoNetwork.git", exact: "3.1.0"),
-    .package(url: "https://github.com/InnoSquadCorp/InnoRouter.git", exact: "3.0.0"),
+    .package(url: "https://github.com/InnoSquadCorp/InnoDI.git", exact: "4.3.0"),
+    .package(url: "https://github.com/InnoSquadCorp/InnoFlow", exact: "4.0.0"),
+    .package(url: "https://github.com/InnoSquadCorp/InnoNetwork.git", exact: "4.0.0"),
+    .package(url: "https://github.com/InnoSquadCorp/InnoRouter.git", exact: "4.2.1"),
 ]
 ```
 
-The important point is not only that the packages are added. The important point is that `InnoSample` does not let every feature consume these libraries however it wants. It distributes them through the `App -> Layers -> Features` structure on purpose.
+The sample does not let every feature import every library freely. Each library sits where its responsibility fits.
 
-So if someone lands on this page searching for phrases like "InnoDI tutorial", "InnoFlow architecture", "InnoRouter SwiftUI example", or "InnoNetwork usage", the right framing is this:
+- `InnoDI`: `AppContainer`, `LayerContainer`, `FeatureContainer`
+- `InnoFlow`: feature `Logic`
+- `InnoRouter`: feature `Router`
+- `InnoNetwork`: `Remote`
+- `Utils`: shared `SampleDesignSupport` for feature UI
 
-> This is not a library-by-library tutorial. It is a practical guide to how those libraries should be placed inside a modular Swift app architecture.
+That placement is the whole point.
 
-## 1. Use InnoDI at composition roots and container boundaries
+## The app shape
 
-The first file to look at is `AppContainer`. It is the clearest example of where [`InnoDI`](https://github.com/InnoSquadCorp/InnoDI) should live in a real app.
+The main dependency direction is:
+
+- `Feature -> Domain`
+- `Data -> Domain`
+- `Remote -> Data + InnoNetwork`
+- `Layers -> Domain + Data + Remote`
+- `Features -> Domain + Feature`
+- `App -> Layers + Features + ThirdParties`
+- `Feature UI -> Utils`
+
+```mermaid
+graph TD
+    App["App"]
+    AppContainer["AppContainer"]
+    Layers["Layers"]
+    LayerContainer["LayerContainer"]
+    Remote["Remote + InnoNetwork"]
+    Data["Data"]
+    Domain["Domain"]
+    Features["Features"]
+    FeatureContainer["FeatureContainer"]
+    Logic["Feature Logic + InnoFlow"]
+    Router["Feature Router + InnoRouter"]
+    UI["Feature UI"]
+    ThirdParties["ThirdParties"]
+    Utils["Utils / SampleDesignSupport"]
+
+    App --> AppContainer
+    AppContainer --> Layers
+    AppContainer --> Features
+    AppContainer --> ThirdParties
+    Layers --> LayerContainer
+    LayerContainer --> Remote
+    LayerContainer --> Data
+    LayerContainer --> Domain
+    Features --> FeatureContainer
+    FeatureContainer --> Logic
+    FeatureContainer --> Router
+    Router --> UI
+    UI --> Utils
+    Logic --> Domain
+```
+
+`Layers` and `Features` are not just folders. They are composition boundaries. `Utils` separates cross-cutting UI support such as shared design helpers without turning it into business state. The point is to hide implementation detail and expose only the next useful surface.
+
+## 1. InnoDI fixes construction boundaries
+
+InnoDI is not used as a global dependency access mechanism. In InnoSample, it appears strongly at composition roots and container boundaries.
 
 ```swift
 @MainActor
-@DIContainer(root: true)
+@DIContainer(root: true, mainActor: true)
 struct AppContainer {
     @Provide(.input)
     var baseURL: URL
 
-    @Provide(.shared, factory: {
-        AnalyticsClient(apiKey: "innosample-demo-key")
-    }, concrete: true)
-    var analyticsClient: AnalyticsClient
-
     @Provide(.shared, factory: { (baseURL: URL) in
-        NetworkFactory.makeTransport(baseURL: baseURL)
-    }, concrete: true)
-    var networkTransport: NetworkTransport
-
-    @Provide(.shared, factory: { (networkTransport: NetworkTransport) in
-        LayerContainer.make(networkTransport: networkTransport)
+        LayerContainer(baseURL: baseURL)
     }, concrete: true)
     var layerContainer: LayerContainer
 
     @Provide(.shared, factory: { (layerContainer: LayerContainer) in
-        FeatureContainer.make(useCases: layerContainer.featureUseCases)
-    }, concrete: true)
+        layerContainer.featureUseCases
+    })
+    var featureUseCases: any FeatureUseCaseContaining
+
+    @SubContainer(
+        scope: .shared,
+        bindings: [(child: \FeatureContainer.useCases, parent: \AppContainer.featureUseCases)],
+        featureRoot: FeatureRootScene.self
+    )
     var featureContainer: FeatureContainer
 }
 ```
 
-This is a good example of what `InnoDI` should be doing in a real codebase.
+`AppContainer` fixes the creation order for the app. It does not know every remote data source or every leaf coordinator detail.
 
-It is not being used as a runtime service locator. It is being used where wiring should be declared explicitly.
+This gives the app:
 
-The pattern is simple:
+- a visible startup graph
+- explicit container ownership
+- generated SwiftUI root-scene wiring
+- less DI framework exposure inside feature logic
 
-- external values like `baseURL` enter as `.input`
-- long-lived infrastructure becomes `.shared`
-- the app composes in one direction only: `NetworkTransport -> LayerContainer -> FeatureContainer`
-- the root container does not need to know the internal steps of `RemoteContainer`, `DataContainer`, and `DomainContainer`
+In the combined architecture, InnoDI answers: "who creates whom?"
 
-That is the right mental model for `InnoDI`: not "object creation convenience," but **explicit dependency graph declaration**.
+## 2. InnoNetwork keeps external API policy inside Remote
 
-If you want the detailed rules around scopes, declaration order, `concrete: true`, and validation, the dedicated [InnoDI post]({% post_url 2026-02-23-innodi-swift-macro-di-en %}) goes deeper. This article stays focused on where that wiring belongs architecturally.
-
-## 2. Layers use InnoDI internally, but expose only a narrow surface
-
-`LayerContainer` connects `Remote -> Data -> Domain`.
-
-```swift
-public struct LayerContainer {
-    private let remoteContainer: RemoteContainer
-    private let dataContainer: DataContainer
-    private let domainContainer: DomainContainer
-
-    public init(networkTransport: NetworkTransport) {
-        self.remoteContainer = RemoteContainer(networkTransport: networkTransport)
-        self.dataContainer = DataContainer(remoteContainer: remoteContainer)
-        self.domainContainer = DomainContainer(dataContainer: dataContainer)
-    }
-
-    public var featureUseCases: any FeatureUseCaseContaining {
-        domainContainer
-    }
-}
-```
-
-This matters because `App` and `Features` do not need to know the concrete `DomainContainer` type. They only receive `featureUseCases`.
-
-The underlying composition is pushed down one level at a time.
-
-### `RemoteContainer`
+Network code spreads quickly when features call clients directly. InnoSample keeps InnoNetwork inside `Remote`.
 
 ```swift
 @DIContainer
 public struct RemoteContainer {
     @Provide(.input)
-    public var networkTransport: NetworkTransport
+    public var baseURL: URL
 
-    @Provide(.shared, factory: { (networkTransport: NetworkTransport) in
-        UserRemoteFactory.make(networkTransport: networkTransport)
+    @Provide(.shared, factory: { (baseURL: URL) in
+        RemoteClientFactory.makeClient(baseURL: baseURL)
+    })
+    var networkClient: any NetworkClient
+
+    @Provide(.shared, factory: { (networkClient: any NetworkClient) in
+        UserRemoteFactory.make(networkClient: networkClient)
     })
     public var userRemoteDataSource: any UserRemoteDataSourceProtocol
 }
 ```
 
-### `DataContainer`
+`RemoteClientFactory` owns operational policy such as retry, interceptors, and timeout.
 
 ```swift
-@DIContainer
-public struct DataContainer {
-    @Provide(.input)
-    public var remoteContainer: any RemoteDataSourceContaining
-
-    @Provide(.shared, factory: { (remoteContainer: any RemoteDataSourceContaining) in
-        UserRepositoryFactory.make(remoteContainer: remoteContainer)
-    })
-    public var userRepository: any UserRepositoryProtocol
-}
+let configuration = NetworkConfiguration.advanced(
+    baseURL: environment.baseURL,
+    resilience: ResiliencePack(
+        retry: ExponentialBackoffRetryPolicy(maxRetries: 2)
+    ),
+    auth: AuthPack(
+        additionalSigners: [RemoteMetadataInterceptor(environment: environment)],
+        additionalResponseInterceptors: [RemoteStatusInterceptor()]
+    ),
+    transport: TransportPack(timeout: 20.0)
+)
 ```
 
-### `DomainContainer`
+Features do not know HTTP. `Domain` does not know `NetworkClient`. External API execution finishes inside `Remote`, and `Data` sees only remote data source contracts.
+
+In the combined architecture, InnoNetwork answers: "how do we communicate with the outside world?"
+
+## 3. Data and Domain translate transport into app language
+
+`Remote` performs API calls, `Data` owns repository implementations and remote data source contracts, and `Domain` exposes entities, repository protocols, and use cases.
+
+The layers keep their jobs separate:
+
+- `Remote`: API requests, DTOs, failure mapping
+- `Data`: repository implementation and DTO-to-domain mapping
+- `Domain`: use cases, domain models, repository protocols
+- `Feature`: use case calls
+
+Use cases are concrete action objects that features can call. Repositories remain protocols because they are real layer-boundary contracts.
+
+This keeps feature code in app language: "load people", "load posts", "load todos", not "perform this HTTP request".
+
+## 4. InnoFlow controls feature state transitions
+
+Feature `Logic` targets use InnoFlow. `PeopleFeatureReducer` manages loading, loaded, failed, selected user, and settings-navigation intent in one reducer.
 
 ```swift
-@DIContainer
-public struct DomainContainer: FeatureUseCaseContaining {
-    @Provide(.input)
-    public var dataContainer: any RepositoryContaining
-}
-
-extension DomainContainer {
-    public var fetchPeopleUseCase: FetchPeopleUseCase {
-        FetchPeopleUseCase(repository: dataContainer.userRepository)
-    }
-}
-```
-
-This gives the sample a few good properties.
-
-- repositories remain protocol-based because they are real cross-layer contracts
-- use cases stay lightweight concrete values because they are stateless wrappers
-- features depend on use cases, not repositories
-- the app root does not need to know remote/data/domain internals
-
-That is a good default: not one giant graph, but **small containers at each boundary with a narrow outward surface**.
-
-This is also consistent with the modularity-first approach discussed in [Understanding Modularity]({% post_url 2024-04-27-understanding-modularity-en %}).
-
-## 3. Keep InnoFlow inside Logic targets
-
-In [`InnoSample`](https://github.com/InnoSquadCorp/InnoSample), [`InnoFlow`](https://github.com/InnoSquadCorp/InnoFlow) belongs inside feature `Logic` targets. `PeopleFeatureReducer` is a representative example.
-
-```swift
-@InnoFlow
+@InnoFlow(phaseManaged: true)
 struct PeopleFeatureReducer {
     struct Dependencies: Sendable {
         let loadPeople: @Sendable () async throws -> [UserSummary]
     }
 
     struct State: Equatable, Sendable, DefaultInitializable {
-        var isLoading = false
-        var hasLoaded = false
+        enum Phase: Hashable, Sendable {
+            case idle
+            case loading
+            case loaded
+            case failed
+        }
+
+        var phase: Phase = .idle
         var people: [UserSummary] = []
         var errorMessage: String?
-        var selectedUser: UserSummary?
-        var pendingOverviewRequest: PeopleOverviewRequest?
         var pendingSettingsRequest: PeopleSettingsRequest?
     }
-
-    enum Action: Equatable, Sendable {
-        case onAppear
-        case refresh
-        case peopleLoaded([UserSummary])
-        case peopleFailed(String)
-        case select(UserSummary)
-        case showOverview
-        case openSettings(OpenSettingsRequest)
-    }
 }
 ```
 
-The important part is not just that the feature has `State` and `Action`. The more important part is that state also carries **one-shot intents** such as:
+The reducer does not know `NetworkClient` or `NavigationStore`.
 
-- `selectedUser`
-- `pendingOverviewRequest`
-- `pendingSettingsRequest`
+- Network work hides behind a use case closure.
+- Navigation is expressed as pending intent.
+- UI renders state and sends actions.
 
-Those are not `InnoRouter` commands. They are domain-friendly requests emitted by the reducer.
+In the combined architecture, InnoFlow answers: "how does this feature state change?"
 
-The async work also stays inside reducer-driven effects.
+## 5. InnoRouter turns screen movement into data
 
-```swift
-private func loadPeople() -> EffectTask<Action> {
-    let loadPeople = dependencies.loadPeople
-
-    return .run { send, _ in
-        do {
-            let people = try await loadPeople()
-            await send(.peopleLoaded(people))
-        } catch {
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            await send(.peopleFailed(message))
-        }
-    }
-    .cancellable("people-feature-load", cancelInFlight: true)
-}
-```
-
-That gives the sample a clean split.
-
-- reducers do not know `SwiftUI`
-- reducers do not know `InnoRouter`
-- reducers receive use case outputs back as actions
-- tests can target state transitions instead of UI side effects
-
-So the right way to think about `InnoFlow` here is not "screen control framework." It is a **feature logic boundary built around state transitions and effects**.
-
-If you want the deeper runtime model, including `Reducer`, `Store`, `EffectTask`, and `PhaseMap`, read the dedicated [InnoFlow post]({% post_url 2026-02-23-innoflow-unidirectional-architecture-en %}). The architectural lesson in `InnoSample` is that reducer ownership stays inside `Logic`.
-
-## 4. The model wraps the InnoFlow store, and the router owns screen movement
-
-`PeopleFeatureModel` wraps the reducer store into a SwiftUI-friendly interface.
+Feature `Router` targets use InnoRouter. Leaf features know their own routes; sibling movement is mediated by `EntireTabCoordinator`.
 
 ```swift
-@MainActor
-@Observable
-public final class PeopleFeatureModel {
-    private let store: Store<PeopleFeatureReducer>
-
-    public init(loadPeople: @escaping @Sendable () async throws -> [UserSummary]) {
-        self.store = Store(
-            reducer: PeopleFeatureReducer(
-                dependencies: .init(loadPeople: loadPeople)
-            )
-        )
-    }
-
-    public func loadIfNeeded() { store.send(.onAppear) }
-    public func select(_ user: UserSummary) { store.send(.select(user)) }
-
-    public func consumeSettingsRequest() -> OpenSettingsRequest? {
-        let request = store.pendingSettingsRequest?.request
-        guard let request else { return nil }
-        store.send(.clearSettingsRequest)
-        return request
-    }
-}
-```
-
-Then `PeopleFeatureCoordinator` owns the `InnoRouter` stores.
-
-```swift
-@MainActor
-@Observable
-public final class PeopleFeatureCoordinator {
-    let navigationStore = NavigationStore<PeopleRoute>()
-    let modalStore = ModalStore<PeopleModalRoute>()
-    let model: PeopleFeatureModel
-
-    func syncNavigationFromSelection() {
-        guard let selectedUser = model.consumeSelectedUser() else { return }
-        navigationStore.send(.resetTo([.detail(selectedUser)]))
-    }
-
-    func syncModalPresentation() {
-        guard let users = model.consumeOverviewUsers() else { return }
-        modalStore.send(.present(.overview(users), style: .sheet))
-    }
-}
-```
-
-This separation is important.
-
-The reducer never calls `navigationStore.send(...)` directly. It finishes at business intent. The coordinator reads that intent and translates it into route commands.
-
-That keeps the ownership clean:
-
-- `Logic` owns state and effects
-- `Model` owns SwiftUI-friendly projection
-- `Router/Coordinator` owns navigation state
-
-## 5. InnoRouter becomes even more valuable at the shell level
-
-At the leaf level, route hosts use [`InnoRouter`](https://github.com/InnoSquadCorp/InnoRouter)'s `NavigationHost` and `ModalHost` in the expected way.
-
-```swift
-public struct PeopleFeatureRouteHost: View {
-    let coordinator: PeopleFeatureCoordinator
-
-    public var body: some View {
-        ModalHost(store: coordinator.modalStore) { route in
-            switch route {
-            case .overview(let users):
-                PeopleOverviewSheet(users: users) {
-                    coordinator.modalStore.send(.dismiss)
-                }
-            }
-        } content: {
-            NavigationHost(store: coordinator.navigationStore) { route in
-                switch route {
-                case .detail(let user):
-                    PeopleDetailScreen(user: user, onOpenSettings: coordinator.openSettings)
-                }
-            } root: {
-                PeopleScreen(
-                    model: coordinator.model,
-                    onSelect: coordinator.select,
-                    onShowOverview: coordinator.showOverview
-                )
-            }
-        }
-    }
-}
-```
-
-But the more interesting file is `EntireTabCoordinator`.
-
-```swift
-@MainActor
-@Observable
 public final class EntireTabCoordinator: TabCoordinator {
     let peopleCoordinator: PeopleFeatureCoordinator
     let postsCoordinator: PostsFeatureCoordinator
@@ -391,197 +248,74 @@ public final class EntireTabCoordinator: TabCoordinator {
         selectedTab = .settings
         settingsCoordinator.showDetail(assigneeID: request.assigneeID)
     }
-
-    func syncCrossFeatureNavigationFromSettings() {
-        guard let request = settingsCoordinator.consumePeopleRequest() else { return }
-        selectedTab = .people
-        peopleCoordinator.showDetail(userID: request.userID)
-    }
 }
 ```
 
-This is the real architectural win.
+This creates a useful separation:
 
-`PeopleFeature` does not directly import `SettingsFeature`, and `SettingsFeature` does not directly own `PeopleFeature` navigation. Instead:
+- `PeopleFeature` does not import `SettingsFeature`.
+- Runtime movement from People to Settings is still possible.
+- Compile-time dependency stays `People -> EntireTab <- Settings`.
+- InnoFlow creates navigation intent; InnoRouter executes it.
 
-1. the reducer emits a one-shot cross-feature request
-2. the feature coordinator consumes that request
-3. the shell coordinator mediates the tab switch and sibling entry
-4. the destination coordinator updates its own route state
+In the combined architecture, InnoRouter answers: "how should this movement be modeled and executed?"
 
-That prevents compile-time dependency cycles while still allowing bidirectional runtime movement.
+## The synergy
 
-The dedicated [InnoRouter post]({% post_url 2026-02-23-innorouter-swiftui-navigation-en %}) explains the runtime surface itself in detail. What `InnoSample` adds is a strong example of **shell-level mediation** instead of direct sibling wiring.
+Putting four libraries in one app does not automatically create good architecture. The benefit comes from giving each library a different boundary.
 
-## 6. Keep InnoNetwork behind CoreNetwork
+InnoSample's split is:
 
-[`InnoSample`](https://github.com/InnoSquadCorp/InnoSample) does not let [`InnoNetwork`](https://github.com/InnoSquadCorp/InnoNetwork) leak everywhere. It introduces a `CoreNetwork` boundary first.
+| Responsibility | Owner |
+| --- | --- |
+| Construction and ownership | InnoDI |
+| External API execution policy | InnoNetwork |
+| App data transformation and use cases | Data / Domain |
+| Feature state transitions | InnoFlow |
+| Screen movement execution | InnoRouter |
+| Shared UI support | Utils |
+| Top-level composition | App / Layers / Features |
 
-`NetworkFactory` centralizes transport policy.
+The result:
 
-```swift
-public enum NetworkFactory {
-    public static func makeTransport(
-        environment: NetworkEnvironment,
-        session: URLSessionProtocol = URLSession.shared
-    ) -> NetworkTransport {
-        let defaults = makeDefaults(environment: environment)
-        return NetworkTransport(
-            client: makeClient(environment: environment, session: session),
-            defaults: defaults
-        )
-    }
+- the DI graph does not become a state machine
+- reducers do not mutate navigation stacks directly
+- network clients do not leak into features
+- routers do not own business logic
+- app root does not construct every leaf implementation directly
 
-    static func makeDefaults(environment: NetworkEnvironment) -> APIDefaults {
-        APIDefaults(
-            environment: environment,
-            logger: RequestLogger(),
-            requestInterceptors: [
-                NetworkMetadataInterceptor(environment: environment),
-            ],
-            responseInterceptors: [
-                NetworkStatusInterceptor(),
-            ]
-        )
-    }
-}
-```
+The larger value is not using each library in isolation. It is **placing them so they do not invade each other's jobs.**
 
-And it exposes only `NetworkTransport` upward.
+## Principles to reuse in your app
 
-```swift
-public actor NetworkTransport {
-    public func send<Request: RequestDefinition>(_ request: Request) async throws -> Request.ResponseBody {
-        do {
-            return try await client.perform(executable:
-                RequestAdapter(request: request, apiDefaults: defaults)
-            )
-        } catch let error as NetworkError {
-            throw NetworkFailure(networkError: error)
-        } catch {
-            throw NetworkFailure.transport(SendableUnderlyingError(error), request: nil)
-        }
-    }
-}
-```
+You do not need to copy InnoSample exactly. The reusable principles are:
 
-That means transport-specific concerns stay inside `CoreNetwork`:
+1. `App` owns root composition only.
+2. `Layers` wires `Remote/Data/Domain` and exposes feature-facing use cases.
+3. `Features` wires leaf feature inputs and routers.
+4. Leaf features are split into `Interface / Logic / UI / Router / Testing`.
+5. `Utils` holds stateless shared UI support such as design helpers.
+6. Cross-feature navigation is mediated by a parent coordinator.
+7. Network policy stays inside `Remote`.
+8. Reducers call use cases, not clients or containers.
 
-- retry policy
-- interceptors
-- logging
-- environment defaults
-- request/response adaptation
+Those rules keep files honest as the app grows.
 
-`Remote` only defines requests and executes them.
+## Conclusion
 
-Here is the full flow for loading people.
+InnoSample is not just a showcase for four libraries. It is an example of placing four libraries at four different architecture boundaries.
 
-### Request definition
+- InnoDI fixes construction boundaries.
+- InnoNetwork isolates external API execution.
+- InnoFlow controls feature state transitions.
+- InnoRouter executes navigation through typed routes and coordinators.
 
-```swift
-struct FetchUsersRequest: RequestDefinition {
-    typealias ResponseBody = [UserRemoteModel]
+The appeal is not that the stack has many features. The appeal is that it separates the responsibilities that usually become tangled in real apps: construction, state, navigation, and networking.
 
-    let featureName = "People"
-    var path: String { "/users" }
-    var headerPolicy: HeaderPolicy { .external }
-}
-```
+When reading InnoSample, the best question is not "how do I call this API?"
 
-### Remote data source
+The better question is:
 
-```swift
-public actor JSONPlaceholderUserRemoteDataSource: UserRemoteDataSourceProtocol {
-    private let transport: NetworkTransport
+**Can my app split these responsibilities the same way?**
 
-    public func fetchUsers() async throws -> [UserRemoteModel] {
-        try await transport.send(FetchUsersRequest())
-    }
-}
-```
-
-### Repository
-
-```swift
-public struct DefaultUserRepository: UserRepositoryProtocol, Sendable {
-    public func fetchUsers() async throws -> [UserSummary] {
-        let users = try await remoteDataSource.fetchUsers()
-        guard !users.isEmpty else {
-            throw DomainError.emptyResponse("사용자")
-        }
-        return users.map(\.domainModel)
-    }
-}
-```
-
-### Use case
-
-```swift
-public struct FetchPeopleUseCase: Sendable {
-    public func callAsFunction() async throws -> [UserSummary] {
-        try await repository.fetchUsers()
-    }
-}
-```
-
-By the time the request reaches `Feature`, the app no longer knows anything about `InnoNetwork`.
-
-That is exactly what you want in a real app. If transport policy changes later, most of the blast radius stays inside `CoreNetwork`.
-
-The product-family view of `InnoNetwork`, including `NetworkConfiguration`, retry policy, downloads, and websockets, is covered in the dedicated [InnoNetwork post]({% post_url 2026-02-23-innonetwork-type-safe-networking-en %}). Here the important lesson is boundary placement.
-
-## 7. The practical ownership model
-
-`InnoSample` suggests a simple ownership table.
-
-| Library | What it should own | What it should not own |
-|---|---|---|
-| `InnoDI` | container declarations, composition roots, layer wiring | screen logic, business state, service-locator-style runtime access |
-| `InnoFlow` | feature state, actions, effects, one-shot intents | route stacks, SwiftUI view composition |
-| `InnoRouter` | stack and modal state, coordinators, cross-feature mediation | business state machines, repository calls |
-| `InnoNetwork` | request execution, retry, interceptors, logging, transport policy | domain modeling, feature logic, app-shell composition |
-
-This matters because a codebase is not healthier just because it "uses all four libraries." It is healthier when each library stays inside its intended boundary.
-
-## 8. Good defaults to copy into a new app
-
-If you use `InnoSample` as the starting point for a real app, these are strong defaults:
-
-1. Keep a single `AppContainer` as the top-level composition root.
-2. Put `InnoNetwork` behind a dedicated `CoreNetwork` module.
-3. Keep `Layers` as a composition-only boundary.
-4. Physically split each feature into `Interface / Logic / UI / Router / Testing / Tests`.
-5. Do not import `SwiftUI` or `InnoRouter` inside feature `Logic`.
-6. Do not let sibling features navigate directly to each other.
-7. Keep repositories protocol-based, and keep stateless use cases as concrete values by default.
-
-Those defaults make it much easier to scale the architecture without mixing ownership boundaries too early.
-
-## Closing
-
-The most useful lesson in `InnoSample` is this:
-
-> The Inno libraries work best when they are not mixed together in the same place.
-
-In practice:
-
-- `InnoDI` declares wiring
-- `InnoFlow` drives state transitions
-- `InnoRouter` mediates screen flow
-- `InnoNetwork` encapsulates transport policy
-
-If all four are visible inside one file, that is often a warning sign. If they appear in clearly separated places across `App -> Layers -> Features`, the architecture tends to stay understandable as the app grows.
-
-For adjacent reading:
-
-- Architecture background: [Understanding Modularity]({% post_url 2024-04-27-understanding-modularity-en %}), [Clean Architecture]({% post_url 2024-05-13-clean-architecture-en %})
-- Library-specific posts: [InnoDI]({% post_url 2026-02-23-innodi-swift-macro-di-en %}), [InnoFlow]({% post_url 2026-02-23-innoflow-unidirectional-architecture-en %}), [InnoRouter]({% post_url 2026-02-23-innorouter-swiftui-navigation-en %}), [InnoNetwork]({% post_url 2026-02-23-innonetwork-type-safe-networking-en %})
-
-## Repository links
-
-- [InnoSample GitHub repository](https://github.com/InnoSquadCorp/InnoSample)
-- [InnoDI GitHub repository](https://github.com/InnoSquadCorp/InnoDI)
-- [InnoFlow GitHub repository](https://github.com/InnoSquadCorp/InnoFlow)
-- [InnoRouter GitHub repository](https://github.com/InnoSquadCorp/InnoRouter)
-- [InnoNetwork GitHub repository](https://github.com/InnoSquadCorp/InnoNetwork)
+If the answer is yes, the Inno libraries become more than a tool collection. They become a practical starting point for preserving app structure over time.

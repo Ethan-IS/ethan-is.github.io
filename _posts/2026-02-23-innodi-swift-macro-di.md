@@ -1,349 +1,235 @@
 ---
-title: "InnoDI: Swift Macro 기반 타입 안전 의존성 주입 라이브러리"
+title: "InnoDI Best Practice: Swift Macro DI를 앱 구조로 고정하는 법"
 date: 2026-02-23 00:00:00 +0900
-lang: ko-KR
 translation_key: innodi-swift-macro-di
+lang: ko-KR
+description: "InnoDI를 왜 써야 하는지, Swift macro 기반 DI를 composition root와 feature boundary에 어떻게 배치해야 하는지, InnoSample의 실제 구조로 설명합니다."
 categories: [iOS, Swift, Architecture]
-tags: [swift, iOS, dependency-injection, macro, di, clean-architecture]
+tags: [swift, iOS, dependency-injection, macro, di, clean-architecture, swiftui, tuist]
 author: ethan
 toc: true
 comments: true
 ---
 
-## 들어가며
+## 왜 DI가 실무에서 어려운가
 
-`InnoDI`를 처음 소개했을 때는 "Swift Macro로 DI 보일러플레이트를 줄여주는 라이브러리"라는 설명이 중심이었습니다. 그 설명도 여전히 틀리지는 않지만, `3.0.1` 기준의 실제 공개 surface를 보면 지금의 핵심은 **정적 dependency graph와 scope validation**입니다.
+iOS 앱에서 의존성 주입은 처음에는 단순합니다. `APIClient`, `Repository`, `UseCase`를 생성자에 넣으면 됩니다. 문제는 앱이 커졌을 때 시작됩니다.
 
-즉, `InnoDI`는 런타임 service locator가 아니라 **DI wiring을 명시적으로 선언하고, 잘못된 그래프를 컴파일/빌드 단계에서 최대한 빨리 막는 프레임워크**에 가깝습니다.
+- 화면마다 임시 factory가 생깁니다.
+- 전역 singleton이 늘어납니다.
+- preview/test override가 실제 앱 graph와 달라집니다.
+- feature가 다른 feature의 구현을 직접 알기 시작합니다.
+- "이 객체는 누가 만들고 얼마나 오래 살아야 하는가"가 코드 리뷰에서 보이지 않습니다.
 
-이 글은 그 기준으로 `InnoDI`를 다시 정리합니다.
+[`InnoDI`](https://github.com/InnoSquadCorp/InnoDI)는 이 문제를 런타임 container로 숨기지 않습니다. 대신 Swift macro로 DI graph를 선언하게 만들고, compile-time/build-time validation으로 구조 drift를 더 빨리 발견하게 합니다.
 
-## 왜 다시 봐야 하나
+핵심 매력은 명확합니다. **의존성 wiring이 코드로 보이고, graph가 검증 가능하며, 생성 책임이 앱 구조 안에 남습니다.**
 
-`3.0.x`에서 `InnoDI`의 중심은 새 매크로 문법이 아닙니다. 오히려 아래 같은 검증 경계가 더 또렷해졌습니다.
+## InnoDI가 소유하는 경계
 
-- strict name-based resolution
-- declaration-order enforcement
-- `concrete: true` opt-in
-- `asyncFactory`의 scope 제약
-- `@DIContainer`가 선언된 타입의 custom `init` 금지
-- build-stage DAG validation과 plugin 기반 검증
+InnoDI가 잘하는 일은 객체를 "어디서든 꺼내 쓰게" 만드는 것이 아닙니다. 좋은 사용 방식은 반대입니다. InnoDI는 생성 경계에서만 강하게 쓰고, feature 내부 로직에는 최대한 드러내지 않는 편이 좋습니다.
 
-그래서 지금 `InnoDI`를 설명할 때는 "매크로가 init을 생성해 준다"에서 멈추면 부족합니다. **어떤 wiring이 허용되고, 어떤 wiring이 거부되는지**까지 함께 설명해야 실제 코드베이스와 맞습니다.
+InnoDI가 소유해야 하는 것:
 
-## InnoDI가 소유하는 것과 소유하지 않는 것
+- 앱의 composition root
+- layer container와 feature container wiring
+- shared/input scope
+- parent-child container ownership
+- graph validation과 DAG inspection
+- SwiftUI root boundary 연결
 
-README의 표현을 그대로 빌리면, `InnoDI`는 **static dependency graph and scope validation** 프레임워크입니다.
+InnoDI가 소유하지 말아야 하는 것:
 
-`InnoDI`가 소유하는 것:
+- 화면 상태 전이
+- navigation stack
+- network retry/session lifecycle
+- 비즈니스 규칙
+- per-action runtime dependency override
 
-- `@DIContainer`와 `@Provide`로 선언한 의존성 wiring
-- `DIScope` 기반 수명주기 표현
-- compile-time / build-time validation
-- DAG 시각화와 validation artifact
+즉 InnoDI는 앱의 "생성 시점 구조"를 다룹니다. 런타임 상태는 [`InnoFlow`]({% post_url 2026-02-23-innoflow-unidirectional-architecture %}), 화면 이동은 [`InnoRouter`]({% post_url 2026-02-23-innorouter-swiftui-navigation %}), 네트워크 실행 정책은 [`InnoNetwork`]({% post_url 2026-02-23-innonetwork-type-safe-networking %}) 같은 더 맞는 경계에 맡기는 편이 좋습니다.
 
-`InnoDI`가 소유하지 않는 것:
-
-- 런타임 상태 전이
-- 화면 이동이나 navigation policy
-- 네트워크 세션/transport lifecycle
-- 컨테이너 해석을 이용한 runtime state machine
-
-InnoSquad 스택 기준으로 보면 상태 전이는 `InnoFlow`, navigation은 `InnoRouter`, transport/session lifecycle은 `InnoNetwork` 쪽 책임입니다. `InnoDI`는 이 레이어들을 연결하는 **정적 wiring**에 집중합니다.
-
-## 핵심 API
-
-## 설치
-
-`InnoDI 3.0.1` 기준 설치는 아래처럼 시작하면 됩니다.
+## 설치와 기본 사용
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/InnoSquadCorp/InnoDI.git", from: "3.0.1")
+    .package(url: "https://github.com/InnoSquadCorp/InnoDI.git", from: "4.3.0")
 ]
 ```
 
-타겟에는 보통 이렇게 연결합니다.
+SwiftUI root helper가 필요하면 `InnoDISwiftUI`도 함께 추가합니다.
 
 ```swift
 .target(
     name: "YourApp",
-    dependencies: ["InnoDI"]
+    dependencies: [
+        "InnoDI",
+        "InnoDISwiftUI"
+    ],
+    plugins: [
+        .plugin(name: "InnoDIDAGValidationPlugin", package: "InnoDI")
+    ]
 )
 ```
 
-### `@DIContainer`
-
-컨테이너 struct를 선언합니다.
+가장 작은 형태는 아래처럼 읽으면 됩니다.
 
 ```swift
-@DIContainer(validate: true, root: false, validateDAG: true, mainActor: false)
-struct AppContainer {}
-```
-
-핵심 포인트는 두 가지입니다.
-
-- 매크로가 컨테이너 initializer와 accessor를 생성합니다.
-- 동시에 잘못된 wiring을 컴파일 단계에서 거부합니다.
-
-또 하나 중요한 제약이 있습니다. `@DIContainer`가 붙은 타입에는 user-defined `init`을 둘 수 없습니다. 타입 본문은 물론, same-file extension과 cross-file extension까지 build validation이 확인합니다.
-
-### `@Provide`
-
-의존성을 선언합니다.
-
-```swift
-@Provide(
-    _ scope: DIScope = .shared,
-    _ type: Type.self? = nil,
-    with: [KeyPath] = [],
-    factory: Any? = nil,
-    asyncFactory: Any? = nil,
-    concrete: Bool = false
-)
-```
-
-선언 방식은 크게 세 가지입니다.
-
-- `.input`으로 외부 입력을 받기
-- `factory` / `asyncFactory`로 생성 규칙을 명시하기
-- `Type.self` + `with:` 조합으로 AutoWiring 쓰기
-
-### `DIScope`
-
-`InnoDI`의 scope는 단순한 convenience가 아니라, validation 규칙과 직접 연결됩니다.
-
-| Scope | 의미 | 비고 |
-|------|------|------|
-| `.input` | 컨테이너 생성 시 외부에서 반드시 주입 | factory 불가 |
-| `.shared` | 컨테이너 수명 동안 1회 생성 후 재사용 | sync/async declaration order 규칙 적용 |
-| `.transient` | 접근할 때마다 새 인스턴스 생성 | 캐시되지 않음 |
-
-## 시작 예제
-
-가장 기본적인 모습은 아래와 같습니다.
-
-```swift
+import Foundation
 import InnoDI
 
-protocol APIClientProtocol {
-    func fetch() async throws -> Data
+struct APIClient {
+    let baseURL: URL
 }
 
-struct APIClient: APIClientProtocol {
-    let baseURL: String
+@DIContainer
+struct AppContainer {
+    @Provide(.input)
+    var baseURL: URL
 
-    func fetch() async throws -> Data {
-        Data()
+    @Provide(.shared, factory: { (baseURL: URL) in
+        APIClient(baseURL: baseURL)
+    }, concrete: true)
+    var apiClient: APIClient
+}
+```
+
+여기서 중요한 것은 `@Provide`가 "등록"이 아니라 "선언"이라는 점입니다. 컨테이너가 어떤 입력을 받고 어떤 shared dependency를 제공하는지 타입으로 드러납니다.
+
+## Best practice 1. Composition root에서 시작합니다
+
+앱의 최상위 컨테이너는 인프라와 큰 composition boundary만 연결해야 합니다. [`InnoSample`](https://github.com/InnoSquadCorp/InnoSample)의 `AppContainer`는 좋은 예입니다.
+
+```swift
+@MainActor
+@DIContainer(root: true, mainActor: true)
+struct AppContainer {
+    @Provide(.input)
+    var baseURL: URL
+
+    @Provide(.shared, factory: { (baseURL: URL) in
+        LayerContainer(baseURL: baseURL)
+    }, concrete: true)
+    var layerContainer: LayerContainer
+
+    @Provide(.shared, factory: { (layerContainer: LayerContainer) in
+        layerContainer.featureUseCases
+    })
+    var featureUseCases: any FeatureUseCaseContaining
+
+    @SubContainer(
+        scope: .shared,
+        bindings: [(child: \FeatureContainer.useCases, parent: \AppContainer.featureUseCases)],
+        featureRoot: FeatureRootScene.self
+    )
+    var featureContainer: FeatureContainer
+}
+```
+
+이 구조에서 `AppContainer`는 `RemoteContainer`, `DataContainer`, `DomainContainer`의 세부 구현을 직접 알지 않습니다. `LayerContainer`와 `FeatureContainer`라는 큰 경계만 연결합니다.
+
+이것이 InnoDI의 첫 번째 best practice입니다. **상위 컨테이너는 모든 것을 만들지 말고, 다음 composition boundary만 알게 하십시오.**
+
+## Best practice 2. 큰 graph 하나보다 작은 container 여러 개가 낫습니다
+
+DI container 하나에 앱 전체 객체를 몰아넣으면 결국 이름만 다른 service locator가 됩니다. InnoDI는 계층마다 작은 container를 두었을 때 더 강합니다.
+
+InnoSample의 `LayerContainer`는 `Remote -> Data -> Domain`을 연결하고, 밖으로는 feature가 필요한 use case surface만 제공합니다.
+
+```swift
+@DIContainer
+public struct LayerContainer {
+    @Provide(.input)
+    public var baseURL: URL
+
+    @Provide(.shared, factory: { (baseURL: URL) in
+        RemoteContainer(baseURL: baseURL)
+    }, concrete: true)
+    var remoteContainer: RemoteContainer
+
+    @SubContainer(
+        scope: .shared,
+        bindings: [(child: \DomainContainer.dataContainer, parent: \LayerContainer.repositories)]
+    )
+    var domainContainer: DomainContainer
+
+    public var featureUseCases: any FeatureUseCaseContaining {
+        domainContainer
     }
 }
-
-@DIContainer
-struct AppContainer {
-    @Provide(.input)
-    var baseURL: String
-
-    @Provide(.shared, APIClient.self, with: [\.baseURL])
-    var apiClient: any APIClientProtocol
-}
-
-let container = AppContainer(baseURL: "https://api.example.com")
-let client = container.apiClient
 ```
 
-여기서 중요한 건 "자동 생성"보다 **엄격한 matching rule**입니다. `with:`에 넘긴 key path 이름은 concrete type의 init parameter 이름과 정확히 맞아야 합니다.
+이 방식의 장점은 분명합니다.
 
-## AutoWiring과 strict matching
+- `App`은 remote/data/domain 내부 조립을 모릅니다.
+- `Features`는 repository 구현을 모릅니다.
+- `Domain`은 remote model과 network client를 모릅니다.
+- graph는 계층별로 작게 검증됩니다.
 
-`InnoDI 3.x`의 핵심 변화 중 하나는 **name-based resolution을 더 엄격하게 다루는 것**입니다.
+DI는 객체를 많이 만드는 도구가 아니라 **의존 방향을 보존하는 도구**가 됩니다.
+
+## Best practice 3. `@SubContainer`로 feature root를 연결합니다
+
+InnoDI 4.x에서 특히 매력적인 부분은 parent-child container 관계를 코드로 선언할 수 있다는 점입니다.
 
 ```swift
-@DIContainer
-struct AppContainer {
-    @Provide(.input)
-    var config: AppConfig
-
-    @Provide(.input)
-    var logger: Logger
-
-    @Provide(.shared, APIClient.self, with: [\.config, \.logger])
-    var apiClient: any APIClientProtocol
-}
-```
-
-위 선언은 개념적으로 `APIClient(config:logger:)` 같은 init을 기대합니다. 이름이 다르면 자동으로 맞춰주지 않습니다. 이 제약은 번거롭지만, 선언을 읽는 사람과 매크로가 **같은 wiring 규칙**을 보게 만든다는 장점이 있습니다.
-
-AutoWiring이 맞지 않는 경우는 factory closure를 쓰는 편이 낫습니다.
-
-```swift
-@Provide(.shared, factory: { (config: AppConfig) in
-    APIClient(configuration: config, timeout: 30)
-})
-var apiClient: any APIClientProtocol
-```
-
-## Declaration Order와 scope 규칙
-
-`PolicyBoundaries.md` 기준으로 `InnoDI`는 선언 순서를 validation contract에 포함합니다.
-
-- `.input`은 항상 참조 가능합니다.
-- sync `.shared`는 input과 **앞서 선언된** sync shared만 참조할 수 있습니다.
-- async `.shared`는 input, 모든 sync shared, 그리고 **앞서 선언된** async shared를 참조할 수 있습니다.
-- `.transient`는 어떤 멤버든 참조할 수 있지만 이름 matching은 여전히 엄격합니다.
-
-즉, 컨테이너 멤버 순서가 단순 스타일이 아니라 **의존성 가용성 규칙**이 됩니다.
-
-## `concrete: true`와 protocol-first 설계
-
-`InnoDI`는 protocol-first 설계를 기본값으로 둡니다. 그래서 concrete shared/transient dependency를 직접 노출할 때는 opt-in이 필요합니다.
-
-```swift
-@DIContainer
-struct AppContainer {
-    @Provide(.input)
-    var apiClient: any APIClientProtocol
-
-    @Provide(.transient, factory: { (apiClient: any APIClientProtocol) in
-        HomeViewModel(apiClient: apiClient)
-    }, concrete: true)
-    var homeViewModel: HomeViewModel
-}
-```
-
-이 규칙 덕분에 concrete 타입 노출이 "실수로" 늘어나는 것을 막고, 의존성 역전 원칙을 의식적으로 지키게 됩니다.
-
-## 비동기 팩토리와 제약
-
-비동기 초기화가 필요하면 `asyncFactory`를 사용할 수 있습니다.
-
-```swift
-@DIContainer
-struct AppContainer {
-    @Provide(.input)
-    var config: AppConfig
-
-    @Provide(.shared, asyncFactory: { (config: AppConfig) async throws in
-        try await DatabaseClient.connect(config: config)
-    })
-    var databaseClient: any DatabaseClientProtocol
-}
-```
-
-여기에도 명확한 제약이 있습니다.
-
-- `factory`와 `asyncFactory`는 동시에 사용할 수 없습니다.
-- `.input`에는 `asyncFactory`를 둘 수 없습니다.
-- `asyncFactory`는 실제 `async` closure여야 합니다.
-
-결국 `InnoDI`는 "지원한다"보다 "어디까지 허용한다"를 명확히 문서화한 프레임워크에 가깝습니다.
-
-## Validation Layers
-
-`InnoDI`의 진짜 가치가 드러나는 부분은 validation입니다.
-
-### 1. Local Container Validation
-
-매크로 단계에서 아래를 검사합니다.
-
-- unknown scope
-- missing factory
-- `.input`의 잘못된 factory 구성
-- strict name-based resolution
-- declaration-order 위반
-- `concrete: true` 누락
-- local cycle / unknown dependency
-- async factory validity
-- same-file `init` 충돌
-
-### 2. Build-Stage Validation
-
-빌드 단계에서는 same-package 소스를 더 넓게 스캔해서 **cross-file extension `init` 충돌**까지 확인합니다.
-
-즉, 매크로만 통과했다고 끝이 아니라 빌드 레벨에서 한 번 더 보강합니다.
-
-### 3. Global DAG Validation
-
-그래프 전체 차원의 순환과 ambiguity는 CLI나 build plugin으로 검증합니다.
-
-```bash
-swift run InnoDI-DependencyGraph --root . --validate-dag
-```
-
-필요하면 특정 컨테이너는 DAG 검증에서 제외할 수 있습니다.
-
-```swift
-@DIContainer(validateDAG: false)
-struct PreviewContainer {
-    @Provide(.input)
-    var mockAPIClient: any APIClientProtocol
-}
-```
-
-이 옵션은 "validation을 끄는 편의 기능"이라기보다, preview/test 전용 컨테이너처럼 **그래프 전역 검증에 참여시키고 싶지 않은 타입**을 분리하는 데 더 적합합니다.
-
-## `PolicyBoundaries`와 custom `init` restriction
-
-`3.0.x`를 이해하려면 README만으로는 부족하고, `PolicyBoundaries.md`를 같이 봐야 합니다. 핵심은 다음입니다.
-
-- cross-file extension target은 semantic resolution을 먼저 시도합니다.
-- ambiguous / unsupported case는 추측하지 않고 conservative fallback 또는 exclusion으로 처리합니다.
-- generic argument extension, constrained `where` extension은 build-stage custom `init` 규칙에서 제외됩니다.
-- nested path(`Outer.Container`) matching을 지원합니다.
-
-이 선택은 "최대한 많이 맞추겠다"보다 **deterministic validation**을 우선하는 방향입니다.
-
-## 테스트와 override 전략
-
-`InnoDI`의 테스트 경험은 별도 override container를 만드는 방식보다, **생성된 initializer override parameter**를 활용하는 쪽이 중심입니다.
-
-```swift
-let container = AppContainer(
-    baseURL: "https://test.example.com",
-    apiClient: MockAPIClient()
+@SubContainer(
+    scope: .shared,
+    bindings: [
+        (child: \EntireTabContainer.peopleCoordinator, parent: \FeatureContainer.peopleCoordinator),
+        (child: \EntireTabContainer.postsCoordinator, parent: \FeatureContainer.postsCoordinator),
+        (child: \EntireTabContainer.settingsCoordinator, parent: \FeatureContainer.settingsCoordinator),
+    ]
 )
+var entireTabContainer: EntireTabContainer
 ```
 
-이 방식의 장점은 두 가지입니다.
+feature root를 이렇게 연결하면 상위는 child가 필요한 입력만 넘기고, child container는 자기 소유의 coordinator나 view root를 조립합니다.
 
-- 프로덕션 wiring과 테스트 wiring의 차이가 init parameter에서 바로 드러납니다.
-- 별도의 runtime registry 없이 mock 교체가 가능합니다.
+SwiftUI 앱에서는 `featureRoot:`를 통해 root scene까지 연결할 수 있습니다. 그러면 앱 시작점에서 "container를 만들고 root view에 넘기는 반복 코드"가 줄어듭니다.
 
-## CLI, Plugin, Artifact
+## Best practice 4. `.input`과 `.shared`를 아키텍처 언어로 씁니다
 
-실무에서 `InnoDI`를 팀 단위로 쓰게 되면 매크로 진단보다 **artifact와 plugin**이 중요해집니다.
+DI scope는 단순 성능 옵션이 아닙니다. scope는 객체의 수명과 ownership을 표현합니다.
 
-`InnoDIDAGValidationPlugin`을 target에 붙이면 DAG 문제를 빌드 실패로 올릴 수 있습니다. 또한 validation 과정에서 아래 artifact가 생성됩니다.
+- `.input`: 외부에서 주입되는 값입니다. `baseURL`, environment, feature input처럼 container가 직접 만들면 안 되는 값에 씁니다.
+- `.shared`: container boundary 안에서 공유되는 인프라입니다. network client, repository, coordinator처럼 identity나 수명이 중요한 객체에 씁니다.
+- computed property: stateless use case처럼 매번 만들어도 의미가 같은 값에 씁니다.
 
-- `result.json`
-- `validation-metrics.json`
-- `validation-summary.md`
-- `dag-validation-stamp.txt`
-- `dag-validation-metrics.json`
-- `dag-validation-summary.md`
+InnoSample은 repository는 shared로 두고, use case는 `DomainContainer`에서 concrete computed value로 제공합니다. 이 선택은 추상화를 줄이면서도 feature가 repository를 직접 알지 않게 합니다.
 
-CI에서는 raw stderr만 보는 대신 Markdown summary와 metrics artifact를 우선 읽는 편이 훨씬 낫습니다.
+## 도입했을 때 얻는 장점
 
-## 언제 어떤 옵션을 써야 하나
+InnoDI를 제대로 쓰면 다음 이점이 생깁니다.
 
-| 상황 | 권장 선택 |
-|------|-----------|
-| 앱 시작 시 외부 값 주입 | `.input` |
-| 컨테이너 단위로 재사용할 서비스 | `.shared` |
-| 접근할 때마다 새 인스턴스가 필요한 ViewModel/Adapter | `.transient` + 필요 시 `concrete: true` |
-| init parameter 이름이 프로퍼티 이름과 정확히 맞음 | `Type.self` + `with:` |
-| 이름이 다르거나 변환 로직이 필요함 | `factory` |
-| 비동기 생성 필요 | `asyncFactory` |
-| preview/test 전용 컨테이너를 전역 DAG에서 분리 | `validateDAG: false` |
+- 생성 책임이 앱 구조 안에 남습니다.
+- feature가 다른 feature의 구현을 직접 만들지 않습니다.
+- DI graph가 코드 리뷰에서 보입니다.
+- macro/build validation으로 wiring mistake를 빨리 잡습니다.
+- SwiftUI root와 test/previews의 entry point가 정리됩니다.
+- 새 feature를 추가할 때 "어느 container에 붙여야 하는가"가 명확해집니다.
 
-## 마무리
+특히 팀 단위 개발에서는 마지막 장점이 큽니다. DI가 암묵적이면 새 feature가 가장 가까운 파일에서 아무 객체나 만들기 쉽습니다. InnoDI는 그 유혹을 줄이고, 앱의 생성 경계를 계속 같은 모양으로 유지하게 만듭니다.
 
-`InnoDI 3.0.1`을 한 문장으로 요약하면, "Swift Macro 기반 DI"보다 **정적 그래프 규칙이 명확한 DI wiring framework**가 더 정확한 설명입니다.
+## 언제 쓰지 않는 편이 나은가
 
-보일러플레이트를 줄여주는 건 여전히 장점입니다. 하지만 실제로 팀에서 가치를 만드는 지점은, wiring이 커질수록 **문제가 나중이 아니라 빌드 시점에 드러난다**는 데 있습니다.
+모든 앱에 macro DI가 필요한 것은 아닙니다.
 
-문서를 더 보고 싶다면 아래 순서가 가장 좋습니다.
+- endpoint 두세 개짜리 작은 prototype
+- 런타임 plugin registration이 핵심인 앱
+- global singleton을 의도적으로 유지하는 legacy 앱
+- DI graph 검증보다 빠른 실험이 더 중요한 단계
 
-1. [README](https://github.com/InnoSquadCorp/InnoDI)
-2. [`Validation.md`](https://github.com/InnoSquadCorp/InnoDI/blob/main/Sources/InnoDI/InnoDI.docc/Validation.md)
-3. [`PolicyBoundaries.md`](https://github.com/InnoSquadCorp/InnoDI/blob/main/Sources/InnoDI/InnoDI.docc/PolicyBoundaries.md)
-4. [`ModuleWideInitDetection.md`](https://github.com/InnoSquadCorp/InnoDI/blob/main/Sources/InnoDI/InnoDI.docc/ModuleWideInitDetection.md)
+이런 경우에는 가벼운 factory나 runtime dependency tool이 더 나을 수 있습니다.
+
+반대로 앱이 여러 feature, layer, platform target으로 나뉘기 시작했다면 InnoDI는 좋은 선택입니다. 객체 생성 자체보다 **생성 경계를 유지하는 비용**이 커지는 시점부터 가치가 커집니다.
+
+## InnoSample에서의 결론
+
+[`InnoSample`]({% post_url 2026-04-03-innosample-inno-libraries-in-practice %})은 InnoDI를 앱 전역에 흩뿌리지 않습니다.
+
+- `AppContainer`는 앱 root composition만 소유합니다.
+- `LayerContainer`는 `Remote/Data/Domain` 조립만 소유합니다.
+- `FeatureContainer`는 leaf feature coordinator 조립만 소유합니다.
+- feature logic은 생성된 dependency를 사용할 뿐, DI framework를 직접 알 필요가 없습니다.
+
+이것이 InnoDI를 가장 설득력 있게 쓰는 방식입니다. **DI를 편의 기능이 아니라 아키텍처 경계의 표기법으로 쓰는 것.** 그때 InnoDI는 단순한 객체 생성 도구가 아니라, 앱 구조를 오래 유지하는 장치가 됩니다.
