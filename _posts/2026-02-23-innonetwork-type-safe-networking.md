@@ -1,336 +1,219 @@
 ---
-title: "InnoNetwork: Swift Concurrency를 위한 타입 안전 네트워킹 프레임워크"
+title: "InnoNetwork Best Practice: Swift Concurrency 네트워크 경계를 설계하는 법"
 date: 2026-02-23 00:00:00 +0900
 translation_key: innonetwork-type-safe-networking
 lang: ko-KR
-categories: [iOS, Swift, Architecture]
-tags: [swift, iOS, networking, async-await, swift-concurrency, clean-architecture, type-safe]
+description: "InnoNetwork를 왜 써야 하는지, Swift Concurrency 기반 네트워크 정책을 Remote 레이어 안에 어떻게 격리하는 것이 좋은지 설명합니다."
+categories: [iOS, Swift, Networking]
+tags: [swift, iOS, networking, async-await, swift-concurrency, clean-architecture, type-safe, api]
 author: ethan
 toc: true
 comments: true
 ---
 
-## 들어가며
+## 왜 네트워크 코드가 실무에서 어려운가
 
-초기 버전의 `InnoNetwork`를 설명할 때는 보통 "Swift Concurrency 기반 타입 안전 HTTP 클라이언트"라는 표현을 썼습니다. 지금도 틀린 말은 아니지만, `3.0.1` 기준으로는 그 설명만으로 부족합니다.
+네트워크 코드는 처음에는 `URLSession.data(for:)`로 충분해 보입니다. 하지만 운영 앱에서는 곧 다른 문제가 생깁니다.
 
-현재 공개 패키지는 아래 세 제품으로 나뉩니다.
+- endpoint마다 header와 timeout 정책이 달라집니다.
+- retry가 HTTP method의 안전성을 무시하고 붙습니다.
+- auth refresh가 중복 실행됩니다.
+- error classification이 feature마다 달라집니다.
+- logging과 tracing이 뒤늦게 들어오며 호출부가 지저분해집니다.
+- DTO, domain model, repository 경계가 섞입니다.
 
-- `InnoNetwork`
-- `InnoNetworkDownload`
-- `InnoNetworkWebSocket`
+[`InnoNetwork`](https://github.com/InnoSquadCorp/InnoNetwork)는 단순 URLSession wrapper가 아니라, Swift Concurrency 기반의 typed request pipeline입니다. request definition, client configuration, retry, interceptor, logger, cache, trust, test support를 명확한 제품군으로 나눕니다.
 
-그리고 실제 public contract는 단순 HTTP wrapper가 아니라, **명시적인 configuration entry point, transport policy, event delivery, durability, reconnect model**까지 포함합니다.
+핵심 매력은 **네트워크 실행 정책을 feature 밖으로 꺼내고, 타입이 있는 endpoint 계약으로 고정할 수 있다는 점**입니다.
 
-이 글은 그 기준으로 `InnoNetwork`를 다시 정리합니다.
+## InnoNetwork가 소유하는 경계
 
-## 왜 다시 봐야 하나
+InnoNetwork가 소유하기 좋은 것:
 
-`3.0.x`에서 가장 중요한 변화는 "더 많은 endpoint 예제"가 아닙니다. 대신 아래 관점이 또렷해졌습니다.
+- typed endpoint definition
+- request/response decoding
+- retry, timeout, transport policy
+- request/response interceptor
+- auth refresh/coalescing
+- logging, tracing, event observation
+- download, websocket, persistent cache 같은 transport-adjacent feature
+- consumer test support
 
-- `safeDefaults`가 권장 진입점이라는 점
-- `advanced` builder로 운영 정책을 국소적으로 조정한다는 점
-- 다운로드와 웹소켓이 별도 product로 분리되어 있다는 점
-- protobuf가 별도 패키지 `InnoNetworkProtobuf`로 이동했다는 점
-- bounded buffering, append-log durability, reconnect taxonomy 같은 운영 모델이 문서화되었다는 점
+InnoNetwork가 소유하지 말아야 하는 것:
 
-즉, 지금 `InnoNetwork`는 "HTTP 요청 보내는 법"보다 **어떤 네트워크 lifecycle을 어떤 surface로 다룰 것인지**가 더 중요한 프레임워크입니다.
+- domain entity 설계
+- repository business policy
+- feature loading state
+- 화면 이동
+- DI graph construction
 
-## 제품군 구조와 ownership boundary
+즉 InnoNetwork는 "외부 API를 어떻게 호출할 것인가"를 소유합니다. "그 결과를 앱 도메인에서 어떻게 해석할 것인가"는 `Data`와 `Domain`의 일입니다.
 
-먼저 제품 경계를 명확히 보는 게 좋습니다.
+## 제품군 선택
 
-### `InnoNetwork`
+InnoNetwork 4.x는 public product가 역할별로 나뉩니다.
 
-기본 request/response API를 담당합니다.
+- `InnoNetwork`: core typed request pipeline
+- `InnoNetworkAuthAWS`: AWS SigV4 reference signer
+- `InnoNetworkDownload`: foreground/background download lifecycle
+- `InnoNetworkWebSocket`: realtime connection lifecycle
+- `InnoNetworkPersistentCache`: on-disk response cache
+- `InnoNetworkTrust`: public-key pinning evaluation
+- `InnoNetworkOpenAPI`: generated client transport support
+- `InnoNetworkTestSupport`: consumer test helpers
 
-- `APIDefinition`
-- `MultipartAPIDefinition`
-- `DefaultNetworkClient`
-- `NetworkConfiguration`
-- `TrustPolicy`
-- `RetryPolicy`
-
-### `InnoNetworkDownload`
-
-다운로드 lifecycle을 담당합니다.
-
-- `DownloadConfiguration`
-- `DownloadManager`
-- progress / completion / failure event stream
-- foreground / background orchestration
-
-### `InnoNetworkWebSocket`
-
-연결 지향 realtime flow를 담당합니다.
-
-- `WebSocketConfiguration`
-- `WebSocketManager`
-- reconnect policy
-- heartbeat / pong timeout
-- event stream
-
-이 구조 덕분에 `InnoNetwork`는 "모든 네트워크 문제를 하나의 클라이언트에 우겨 넣는 패키지"가 아니라, transport 성격에 따라 surface를 분리한 프레임워크 제품군이 됩니다.
-
-## 설치
-
-기본 설치는 `3.0.1` 기준으로 아래처럼 시작합니다.
+일반 앱의 첫 진입점은 보통 `InnoNetwork`입니다.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/InnoSquadCorp/InnoNetwork.git", from: "3.0.1")
+    .package(url: "https://github.com/InnoSquadCorp/InnoNetwork.git", .upToNextMinor(from: "4.0.0"))
 ]
 ```
 
-## Core Request Model
+앱이 stable ledger만 사용한다면 `.upToNextMajor(from: "4.0.0")`도 선택할 수 있지만, minor 단위로 provisionally stable surface가 발전할 수 있으므로 `CHANGELOG.md`를 같이 확인하는 편이 좋습니다.
 
-기본 요청 모델은 여전히 `APIDefinition`입니다.
+## Best practice 1. 앱 전체가 아니라 `Remote` 레이어에 가둡니다
 
-```swift
-import Foundation
-import InnoNetwork
+InnoNetwork를 feature마다 직접 import하면 네트워크 정책이 앱 전체로 퍼집니다. InnoSample은 이 선택을 피합니다.
 
-struct User: Decodable, Sendable {
-    let id: Int
-    let name: String
-}
+현재 구조는 다음과 같습니다.
 
-struct GetUser: APIDefinition {
-    typealias Parameter = EmptyParameter
-    typealias APIResponse = User
+- `Remote`: InnoNetwork client, request definition, interceptor, remote failure mapping
+- `Data`: remote data source contract와 repository 구현
+- `Domain`: repository protocol, entity, use case
+- `Feature`: use case만 호출
 
-    var method: HTTPMethod { .get }
-    var path: String { "/users/1" }
-}
-```
+이 구조에서 `PeopleFeature`는 `NetworkClient`를 모릅니다. feature는 `FetchPeopleUseCase`만 알고, 실제 HTTP 호출은 `Remote` 안에서 끝납니다.
 
-실행은 `DefaultNetworkClient`가 맡습니다.
+## Best practice 2. client configuration은 한곳에서 조립합니다
+
+운영 네트워크 정책은 endpoint마다 흩어지면 안 됩니다. InnoSample은 `RemoteClientFactory`에서 기본 client를 만듭니다.
 
 ```swift
-let client = DefaultNetworkClient(
-    configuration: .safeDefaults(
-        baseURL: URL(string: "https://api.example.com/v1")!
-    )
-)
-
-let user = try await client.request(GetUser())
-print(user.name)
-```
-
-여기서 중요한 건 예전처럼 별도 `APIConfigure` 타입을 기본 설정 entry point로 두지 않는다는 점입니다. `3.0.x`에서는 **configuration object를 명시적으로 생성하는 방식**이 문서와 예제의 중심입니다.
-
-## `safeDefaults`와 `advanced`
-
-지금 문서에서 가장 강조하는 메시지는 간단합니다.
-
-> 특별한 운영 요구가 없다면 `safeDefaults`에 머문다.
-
-### 권장 시작점
-
-```swift
-let client = DefaultNetworkClient(
-    configuration: NetworkConfiguration.safeDefaults(
-        baseURL: URL(string: "https://api.example.com")!
-    )
-)
-```
-
-### 운영 정책이 필요할 때만 `advanced`
-
-```swift
-let configuration = NetworkConfiguration.advanced(
-    baseURL: URL(string: "https://api.example.com")!
-) { builder in
-    builder.timeout = 30
-    builder.retryPolicy = ExponentialBackoffRetryPolicy()
-    builder.trustPolicy = .systemDefault
-}
-
-let client = DefaultNetworkClient(configuration: configuration)
-```
-
-이 구분이 중요한 이유는, `advanced`는 public API이긴 하지만 숫자나 세부 튜닝 값 자체를 contract로 고정하는 surface는 아니기 때문입니다. 프레임워크가 권장하는 경로는 여전히 `safeDefaults`입니다.
-
-## Transport / Operational Surface
-
-`InnoNetwork`를 `3.x` 기준으로 설명할 때는 request/response shape만이 아니라 운영 surface를 같이 봐야 합니다.
-
-### `RetryPolicy`
-
-재시도는 business code에 흩어지는 로직이 아니라 policy로 분리됩니다.
-
-- `RetryPolicy`
-- `ExponentialBackoffRetryPolicy`
-
-### `TrustPolicy`
-
-신뢰 평가도 명시적인 surface로 노출됩니다.
-
-- `.systemDefault`
-- public key pinning
-
-### `EventDeliveryPolicy`
-
-이 부분이 특히 `3.x`다운 변화입니다. 이벤트 전달은 무한 버퍼에 기대지 않고, **bounded buffering과 overflow policy**를 가진 별도 정책으로 다뤄집니다.
-
-즉, 운영 중에 event stream이 과도하게 밀릴 때 어떤 식으로 처리할지를 public surface에서 조절할 수 있습니다.
-
-### `URLQueryEncoder`와 `AnyResponseDecoder`
-
-문서의 톤을 보면 query/form encoding과 decoding도 점점 더 명시적으로 다뤄집니다.
-
-- `URLQueryEncoder`는 deterministic ordering을 가진 query / form 인코딩 경로를 담당합니다.
-- `AnyResponseDecoder`는 explicit decoding strategy를 구성하는 public surface 중 하나입니다.
-
-둘 다 "일상적으로 직접 만지는 타입"은 아닐 수 있지만, `3.x` public contract를 설명할 때는 존재를 짚고 넘어가는 편이 맞습니다.
-
-## Interceptor와 request/response policy
-
-기존 글에서는 `RequestInterceptor`, `ResponseInterceptor`, `RetryPolicy`를 프레임워크의 핵심 전부처럼 설명했습니다. `3.x`에서는 톤을 조금 바꾸는 편이 맞습니다.
-
-이 타입들은 여전히 중요합니다.
-
-- `RequestInterceptor`
-- `ResponseInterceptor`
-- `RetryPolicy`
-
-하지만 프레임워크의 진짜 중심은 "인터셉터를 몇 개 붙일 수 있다"가 아니라, **request execution이 명시적인 정책 경계 안에서 실행된다**는 데 있습니다.
-
-README와 changelog를 보면 request/response execution은 internal transport policy와 explicit decoding strategy 쪽으로 재정리되어 있습니다. 이 레이어는 구현의 핵심이지만, 블로그에서는 **public contract가 아닌 운영 모델 설명** 정도로만 다루는 편이 정확합니다.
-
-## Download Lifecycle
-
-다운로드는 `InnoNetworkDownload` product가 담당합니다.
-
-```swift
-import Foundation
-import InnoNetworkDownload
-
-let manager = DownloadManager.shared
-let task = await manager.download(
-    url: URL(string: "https://example.com/file.zip")!,
-    toDirectory: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-)
-
-for await event in await manager.events(for: task) {
-    print(event)
-}
-```
-
-이 모듈의 핵심은 단순 파일 다운로드가 아닙니다.
-
-- foreground / background orchestration
-- pause / resume / retry
-- listener retention
-- append-log persistence 기반 durability
-
-즉, 다운로드를 "URLSession downloadTask 래퍼"가 아니라 **지속성과 이벤트 전달이 있는 lifecycle manager**로 보는 편이 맞습니다.
-
-필요하면 configuration도 명시적으로 생성할 수 있습니다.
-
-```swift
-let configuration = DownloadConfiguration.advanced { builder in
-    builder.maxConnectionsPerHost = 3
-    builder.maxRetryCount = 2
-}
-```
-
-새 코드에서는 `safeDefaults()`가 기본, `advanced`가 조정 경로라는 패턴이 여기서도 반복됩니다.
-
-## WebSocket Lifecycle
-
-웹소켓은 `InnoNetworkWebSocket`이 맡습니다.
-
-```swift
-import Foundation
-import InnoNetworkWebSocket
-
-let task = await WebSocketManager.shared.connect(
-    url: URL(string: "wss://echo.example.com/socket")!
-)
-
-for await event in await WebSocketManager.shared.events(for: task) {
-    print(event)
-}
-```
-
-이 product의 핵심은 단순 connect/send/receive API보다 아래 운영 모델입니다.
-
-- reconnect policy
-- handshake-aware close taxonomy
-- reconnect suppression rules
-- heartbeat / pong timeout
-- event delivery policy
-
-그래서 `WebSocketManager`를 설명할 때는 "실시간 통신을 지원한다"보다 **연결 실패와 재연결을 어떤 규칙으로 관리하는지**가 더 중요합니다.
-
-## Error Handling
-
-`InnoNetwork`는 opaque error보다 명시적인 transport error를 선호합니다.
-
-```swift
-do {
-    let user = try await client.request(GetUser())
-    print(user)
-} catch let error as NetworkError {
-    switch error {
-    case .invalidBaseURL(let url):
-        print("Invalid base URL: \(url)")
-    case .invalidRequestConfiguration(let message):
-        print("Invalid request configuration: \(message)")
-    case .statusCode(let response):
-        print("Unexpected status code: \(response.statusCode)")
-    case .objectMapping(let underlying, _):
-        print("Decoding failed: \(underlying)")
-    case .trustEvaluationFailed(let reason):
-        print("Trust evaluation failed: \(reason)")
-    case .cancelled:
-        print("Request cancelled")
-    default:
-        print(error)
+enum RemoteClientFactory {
+    static func makeClient(
+        baseURL: URL,
+        session: URLSessionProtocol = URLSession.shared
+    ) -> any NetworkClient {
+        let configuration = NetworkConfiguration.advanced(
+            baseURL: baseURL,
+            resilience: ResiliencePack(
+                retry: ExponentialBackoffRetryPolicy(
+                    maxRetries: 2,
+                    maxTotalRetries: 2,
+                    retryDelay: 0.4
+                )
+            ),
+            auth: AuthPack(
+                additionalSigners: [
+                    RemoteMetadataInterceptor(environment: .init(baseURL: baseURL)),
+                ],
+                additionalResponseInterceptors: [
+                    RemoteStatusInterceptor(),
+                ]
+            ),
+            transport: TransportPack(
+                timeout: 20.0,
+                cachePolicy: .reloadIgnoringLocalCacheData
+            )
+        )
+        return DefaultNetworkClient(configuration: configuration, session: session)
     }
 }
 ```
 
-특히 `invalidRequestConfiguration`은 단순 "뭔가 실패했다"가 아니라, request shape와 policy가 맞지 않는다는 신호에 가깝습니다. 예를 들어 query 인코딩 규칙이나 multipart payload shape가 잘못됐을 때 이런 에러가 나올 수 있습니다.
+여기서 retry, metadata, status handling, timeout이 한곳에 모입니다. 이 배치는 feature code를 깨끗하게 만들 뿐 아니라 운영 정책 리뷰를 쉽게 합니다.
 
-## Protocol Buffers는 이제 별도 패키지
+## Best practice 3. endpoint는 의미 있는 타입으로 둡니다
 
-이전 글에서는 protobuf 지원을 본 패키지의 확장 기능처럼 다뤘지만, `3.0.1` 기준으로는 **`InnoNetworkProtobuf`가 별도 패키지**입니다.
+반복적인 단순 API는 `EndpointBuilder`가 좋은 시작점입니다. 하지만 sample이나 production app에서 endpoint의 의미가 중요해지면 `APIDefinition` 타입으로 빼는 편이 좋습니다.
 
 ```swift
-dependencies: [
-    .package(url: "https://github.com/InnoSquadCorp/InnoNetwork.git", from: "3.0.1"),
-    .package(url: "https://github.com/InnoSquadCorp/InnoNetworkProtobuf.git", branch: "main")
-]
+import InnoNetwork
+
+protocol RemoteRequest: APIDefinition {
+    var featureName: String { get }
+}
+
+extension RemoteRequest {
+    var method: HTTPMethod { .get }
+
+    var headers: HTTPHeaders {
+        var headers = HTTPHeaders.default
+        headers.update(name: "X-Sample-Feature", value: featureName)
+        return headers
+    }
+
+    var logger: NetworkLogger {
+        RemoteRequestLogger()
+    }
+}
 ```
 
-즉, protobuf가 필요한 앱은 `InnoNetwork`만 추가하면 끝이 아닙니다. 이 분리는 "기능이 사라졌다"기보다, core transport 패키지와 protobuf adapter layer를 더 명확히 분리한 것으로 보는 편이 맞습니다.
+이렇게 하면 공통 header와 logger 정책을 remote request 계층에 모을 수 있습니다. endpoint 호출부는 문자열 path 조합보다 훨씬 명확해집니다.
 
-## 언제 무엇을 써야 하나
+## Best practice 4. error를 remote failure로 한 번 변환합니다
 
-| 상황 | 권장 선택 |
-|------|-----------|
-| 일반적인 REST/HTTP API 요청 | `InnoNetwork` + `NetworkConfiguration.safeDefaults(baseURL:)` |
-| retry / trust / metrics 같은 운영 정책 조정 필요 | `NetworkConfiguration.advanced(baseURL:_:)` |
-| 파일 다운로드, 앱 생명주기와 연결된 progress 추적 | `InnoNetworkDownload` + `DownloadManager` |
-| reconnect와 heartbeat가 중요한 실시간 연결 | `InnoNetworkWebSocket` + `WebSocketManager` |
-| protobuf request/response 모델 필요 | `InnoNetwork` + `InnoNetworkProtobuf` |
+`NetworkError`를 feature까지 그대로 올리면 UI가 transport detail을 알게 됩니다. 반대로 모든 error를 `Error`로 뭉개면 원인을 잃습니다.
 
-## 마무리
+좋은 방식은 `Remote`에서 네트워크 error를 `RemoteFailure`로 변환하고, `Data/Domain`으로 올라가며 더 앱다운 error로 바꾸는 것입니다.
 
-`InnoNetwork 3.0.1`을 한 문장으로 정리하면, "타입 안전 HTTP 클라이언트"보다는 **운영 정책이 명시된 네트워크 프레임워크 제품군**이 더 정확한 설명입니다.
+이렇게 나누면 각 레이어의 책임이 선명해집니다.
 
-`APIDefinition`과 `DefaultNetworkClient`는 여전히 출발점입니다. 하지만 실제로 `3.x`를 잘 쓰려면 다음 네 가지를 같이 이해해야 합니다.
+- InnoNetwork: HTTP/transport/decoding error classification
+- Remote: 외부 API 호출 실패 의미로 변환
+- Data: repository policy 적용
+- Domain: feature가 이해할 수 있는 domain error 제공
 
-- `safeDefaults`가 기본 경로라는 점
-- `advanced`는 운영 정책이 필요할 때만 쓴다는 점
-- download / websocket lifecycle이 별도 product라는 점
-- protobuf가 별도 패키지로 분리되었다는 점
+feature는 "timeout인지, 500인지, decoding 실패인지"를 필요할 때만 domain language로 받습니다.
 
-더 자세히 보려면 아래 문서부터 읽는 걸 추천합니다.
+## Best practice 5. 테스트는 URLSession 경계에서 끊습니다
 
-1. [README](https://github.com/InnoSquadCorp/InnoNetwork)
-2. [`API_STABILITY.md`](https://github.com/InnoSquadCorp/InnoNetwork/blob/main/API_STABILITY.md)
-3. [`Examples/README.md`](https://github.com/InnoSquadCorp/InnoNetwork/blob/main/Examples/README.md)
-4. [`docs/releases/3.0.1.md`](https://github.com/InnoSquadCorp/InnoNetwork/blob/main/docs/releases/3.0.1.md)
+InnoNetwork는 `URLSessionProtocol`과 test support를 통해 네트워크 경계를 테스트하기 좋게 만듭니다. InnoSample의 remote test는 stub session으로 실제 request header와 response mapping을 확인합니다.
+
+검증해야 할 것은 "진짜 인터넷이 되는가"가 아닙니다.
+
+- path가 맞는가
+- header가 붙는가
+- status error가 변환되는가
+- decoding failure가 올바르게 분류되는가
+- retry/interceptor ordering이 의도와 맞는가
+
+이런 테스트는 feature UI test보다 빠르고 안정적입니다.
+
+## 도입했을 때 얻는 장점
+
+InnoNetwork를 잘 쓰면 다음 장점이 생깁니다.
+
+- endpoint 계약이 타입으로 남습니다.
+- retry/auth/interceptor 정책이 호출부 밖으로 빠집니다.
+- 네트워크 error가 더 일관되게 분류됩니다.
+- feature가 transport 구현을 모릅니다.
+- remote layer test가 쉬워집니다.
+- download/websocket/cache/trust 같은 운영 기능을 같은 철학으로 확장할 수 있습니다.
+
+단순히 "HTTP 호출을 쉽게 한다"가 핵심이 아닙니다. **네트워크가 앱 아키텍처를 침범하지 못하게 막는 것**이 더 큰 가치입니다.
+
+## 언제 쓰면 좋은가
+
+InnoNetwork는 이런 상황에서 매력이 큽니다.
+
+- endpoint가 많고 공통 정책이 필요한 앱
+- auth refresh, retry, timeout, logging이 중요한 앱
+- feature별 네트워크 코드 중복이 늘어난 앱
+- Swift Concurrency와 strict error classification을 선호하는 팀
+- download, websocket, persistent cache까지 같은 package family로 다루고 싶은 팀
+
+반대로 일회성 script나 아주 작은 prototype에서는 URLSession만으로 충분할 수 있습니다.
+
+## InnoSample에서의 결론
+
+[`InnoSample`]({% post_url 2026-04-03-innosample-inno-libraries-in-practice %})에서 InnoNetwork는 `Remote` 안에만 강하게 존재합니다.
+
+- `RemoteContainer`가 `NetworkClient`와 remote data source를 조립합니다.
+- `RemoteClientFactory`가 retry/interceptor/timeout/logger 정책을 만듭니다.
+- `RemoteRequest`가 공통 request surface를 제공합니다.
+- `Data`는 remote data source protocol만 압니다.
+- `Domain`과 `Feature`는 InnoNetwork를 모릅니다.
+
+이것이 InnoNetwork의 좋은 사용법입니다. **네트워크 실행 정책은 강하게 타입화하되, 앱 바깥 경계에 가둡니다.** 그러면 feature는 더 단순해지고, 네트워크 정책은 더 운영 가능한 형태로 남습니다.
